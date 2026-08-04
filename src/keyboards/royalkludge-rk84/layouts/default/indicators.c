@@ -1,6 +1,7 @@
 #include "kbdef.h"
 #include "keyboard.h"
 #include "indicators.h"
+#include "delay.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -61,15 +62,18 @@ void indicators_start(void)
 #if RK84_RGB_ENABLE
     /*
      * Safe RGB bring-up: everything off except ONE logical LED
-     * (row 0, column 0, component 0) at low intensity, so the first
-     * flash validates component order / sink polarity / PWM mapping
-     * before any full-grid lighting. Duty = 64 * 1 * 2 = 128
-     * (5% of the 2560-count period).
+     * (row 0, column 0) at low intensity, cycling the three
+     * components so the physical R/G/B order is confirmed before
+     * any full-grid lighting. Duty = 64 * 1 * 2 = 128
+     * (5% of the 2560-count period). Each component ~1.2 s,
+     * looping forever so the sequence is observable at any time.
+     *
+     * ORDER MATTERS: the PWM scheduler (started below) must be
+     * running BEFORE the plane writes, because the per-phase render
+     * (indicators_update_step) only executes while the scheduler
+     * ticks. Writing the plane first and cycling before the start
+     * produces no light.
      */
-    rgb_fill_static(0, 0, 0);
-    rgb_plane[0][0] = 64;
-
-    rgb_blank();
 #else
     /* Matrix-only image: no RGB outputs or framebuffer. */
 #endif
@@ -81,6 +85,23 @@ void indicators_start(void)
      */
     PWM00CON = 0xC2;
     IEN1 |= _EPWM0;
+
+#if RK84_RGB_ENABLE
+    /* Component-order cycle, NOW that the scheduler renders.
+     * LOOPS forever so the sequence is observable at any time
+     * (a one-shot probe finishes before the user looks). */
+    while (1) {
+        rgb_fill_static(0, 0, 0);
+        rgb_plane[0][0] = 64;      /* component 0 */
+        delay_ms(4000);
+        rgb_fill_static(0, 0, 0);
+        rgb_plane[1][0] = 64;      /* component 1 */
+        delay_ms(4000);
+        rgb_fill_static(0, 0, 0);
+        rgb_plane[2][0] = 64;      /* component 2 */
+        delay_ms(4000);
+    }
+#endif
 #endif /* RK84_RECOVERY_ONLY */
 }
 
