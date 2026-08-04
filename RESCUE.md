@@ -21,6 +21,29 @@ ISP VID:PID       0603:1020
 The backup image lives in the local workspace (`via-lite/backup/`), not in
 this repository. Never commit or overwrite it.
 
+## Verify the stock backup BEFORE every restore
+
+macOS:
+
+```bash
+md5 ../via-lite/backup/rk68-mac-backup.bin
+```
+
+Linux:
+
+```bash
+md5sum ../via-lite/backup/rk68-mac-backup.bin
+```
+
+Required result:
+
+```text
+4ca60eb0799b5ee1b4247056df8ec1f0
+```
+
+If the checksum differs, stop: the backup is not the verified stock
+image and must not be used for recovery.
+
 ## Non-negotiable recovery layers
 
 1. ROM ISP/bootloader (0xF000-0xFFFF) is never touched — flash writes

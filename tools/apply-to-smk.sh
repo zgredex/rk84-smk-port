@@ -21,6 +21,21 @@ if [[ "$actual" != "$expected" ]]; then
     exit 1
 fi
 
+# The checkout must be clean (no previous patch application residue).
+if ! git -C "$SMK_DIR" diff --quiet ||
+   ! git -C "$SMK_DIR" diff --cached --quiet; then
+    echo "SMK checkout is not clean" >&2
+    echo "Run: git -C '$SMK_DIR' reset --hard $expected && git -C '$SMK_DIR' clean -fd" >&2
+    exit 1
+fi
+
+board_dst="$SMK_DIR/src/keyboards/royalkludge-rk84"
+if [[ -e "$board_dst" ]]; then
+    echo "Board destination already exists: $board_dst" >&2
+    echo "Remove it first, or reset the checkout." >&2
+    exit 1
+fi
+
 # 1. Meson: board entry, scoped USB identity defines, no RK84 flash target.
 git -C "$SMK_DIR" apply --check "$PATCH_DIR/0001-rk84-meson.patch"
 git -C "$SMK_DIR" apply "$PATCH_DIR/0001-rk84-meson.patch"

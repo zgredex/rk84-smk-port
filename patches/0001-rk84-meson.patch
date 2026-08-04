@@ -1,14 +1,21 @@
 diff --git a/meson.build b/meson.build
-index afa6bfd..c31fe48 100644
+index afa6bfd..be3223c 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -22,6 +22,27 @@ parts = [
+@@ -17,11 +17,35 @@ default_options = {
+     'product_id': '0xdead',
+ }
+ 
++rk84_stage = get_option('rk84_stage')
++
+ parts = [
+     # keyboard, platform, layouts, options
      ['example', 'sh68f90a', ['default'], {}],
      ['nuphy-air60', 'sh68f90a', ['default'], { 'vendor_id': '0x05ac', 'product_id': '0x024f', 'wireless': 'bk3632', 'led_rows': '5', 'led_cols': '16', 'led_cx2': '13', 'led_cy2': '4' }],
      ['eyooso-z11', 'sh68f90a', ['default'], { 'vendor_id': '0x258a', 'product_id': '0x002a', 'led_rows': '5', 'led_cols': '14', 'led_cx2': '13', 'led_cy2': '4' }],
 +    # RK84 (SH68F90A): 16x6 matrix, 21x6 LED grid, wired milestone 1.
-+    # Stock USB identity via per-board options; recovery-only + no-RGB
-+    # flags make the first flash candidate safe (see RESCUE.md).
++    # Bring-up stage selected via -Drk84_stage=recovery|matrix|rgb;
++    # dual reports behind -Drk84_dual_reports=true (host-tested only).
 +    ['royalkludge-rk84', 'sh68f90a', ['default'], {
 +        'vendor_id': '0x258a',
 +        'product_id': '0x0059',
@@ -24,13 +31,23 @@ index afa6bfd..c31fe48 100644
 +        'usb_product': '"RK Bluetooth Keyboar"',
 +        'usb_serial': '""',
 +        'rk84_stock_reports': true,
-+        'rk84_rgb': false,
-+        'rk84_recovery_only': true,
++        'rk84_recovery_only': rk84_stage == 'recovery',
++        'rk84_rgb': rk84_stage == 'rgb',
++        'rk84_dual_reports': get_option('rk84_dual_reports'),
 +    }],
  ]
  
  # SMK
-@@ -130,7 +151,7 @@ sdar_args = ['-rc']
+@@ -123,6 +147,8 @@ endif
+ 
+ if get_option('buildtype') == 'debug'
+     cc_base_args += '-DDEBUG=1'
++else
++    cc_base_args += '-DDEBUG=0'
+ endif
+ 
+ sdar_args = ['-rc']
+@@ -130,7 +156,7 @@ sdar_args = ['-rc']
  cc = find_program('sdcc', required : true)
  sdar = find_program('sdar', required : true)
  packihx = find_program('packihx', required : true)
@@ -39,7 +56,7 @@ index afa6bfd..c31fe48 100644
  
  # Host-side generator that bakes per-device LED animation geometry into ROM tables
  # (see utils/led_geometry_gen.c). Compiled once with the host compiler at configure
-@@ -181,6 +202,44 @@ foreach part : parts
+@@ -181,6 +207,47 @@ foreach part : parts
              '-DUSB_PID=@0@'.format(options['product_id']),
          ]
  
@@ -80,11 +97,14 @@ index afa6bfd..c31fe48 100644
 +        else
 +            cc_args += '-DRK84_RECOVERY_ONLY=0'
 +        endif
++        if options.get('rk84_dual_reports', false)
++            cc_args += '-DRK84_DUAL_REPORTS=1'
++        endif
 +
          wireless = options.get('wireless', '')
          if wireless == 'bk3632'
              src_main += src_platform_bk3632
-@@ -260,10 +319,16 @@ foreach part : parts
+@@ -260,10 +327,16 @@ foreach part : parts
          )
  
          flash_target_name = '@0@flash'.format(prefix)
@@ -105,3 +125,24 @@ index afa6bfd..c31fe48 100644
  
          message('target available: @0@, flash: @1@'.format(hex_smk_target_name, flash_target_name))
      endforeach
+diff --git a/meson.options b/meson.options
+index a2af75d..7961056 100644
+--- a/meson.options
++++ b/meson.options
+@@ -1 +1,16 @@
+ option('nkro', type : 'feature', value : 'enabled', description: 'NKRO support')
++
++option(
++    'rk84_stage',
++    type : 'combo',
++    choices : ['recovery', 'matrix', 'rgb'],
++    value : 'recovery',
++    description : 'RK84 bring-up stage'
++)
++
++option(
++    'rk84_dual_reports',
++    type : 'boolean',
++    value : false,
++    description : 'Send simultaneous RK84 EP1 6KRO and EP2 NKRO'
++)

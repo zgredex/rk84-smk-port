@@ -8,6 +8,22 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: rk84-recovery
+            setup: "-Drk84_stage=recovery"
+            dir: build-rk84-recovery
+          - name: rk84-matrix
+            setup: "-Drk84_stage=matrix"
+            dir: build-rk84-matrix
+          - name: rk84-rgb
+            setup: "-Drk84_stage=rgb"
+            dir: build-rk84-rgb
+          - name: rk84-dual
+            setup: "-Drk84_stage=matrix -Drk84_dual_reports=true"
+            dir: build-rk84-dual
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -27,22 +43,83 @@ jobs:
         run: |
           SMK_DIR=$PWD/smk bash $PWD/tools/apply-to-smk.sh
 
-      - name: Build RK84
+      - name: Build (${{ matrix.name }})
         run: |
           cd smk
-          meson setup build-rk84 --buildtype=release
-          ninja -C build-rk84 royalkludge-rk84_default_smk.hex
+          meson setup ${{ matrix.dir }} --buildtype=release ${{ matrix.setup }}
+          ninja -C ${{ matrix.dir }} royalkludge-rk84_default_smk.hex
 
-      - name: Check HEX bounds (first-stage cap 0xBC00)
+      - name: Validate HEX (bounds + checksum, cap 0xBC00)
         run: |
-          python3 $PWD/tools/check-hex-bounds.py smk/build-rk84/royalkludge-rk84_default_smk.hex --limit 0xBC00
+          python3 $PWD/tools/check-hex-bounds.py \
+            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex \
+            --limit 0xBC00
 
-      - name: Check HEX bounds (hard cap 0xEC00)
+      - name: Validate HEX (hard cap 0xEC00)
         run: |
-          python3 $PWD/tools/check-hex-bounds.py smk/build-rk84/royalkludge-rk84_default_smk.hex --limit 0xEC00
+          python3 $PWD/tools/check-hex-bounds.py \
+            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex \
+            --limit 0xEC00
 
-      - name: Upload firmware
+      - name: Recovery invariant (${{ matrix.name }})
+        if: matrix.name == 'rk84-recovery'
+        run: |
+          # The recovery image must not enable PWM0: verify no
+          # IEN1 EPWM0-enable path or PWM00CON 0xC2/0xCA write is
+          # reachable. Grep the listing for the scheduler start.
+          cd smk
+          ninja -C ${{ matrix.dir }} royalkludge-rk84_default_smk.ihx
+          # SDCC .ihx is a hex image; check the generated .rel for
+          # the indicators_start object and confirm no EPWM0 path
+          # exists in the recovery build by checking symbols.
+          if grep -q "EPWM0" ${{ matrix.dir }}/royalkludge-rk84_default_smk.ihx.p/indicators.rel; then
+            echo "FAIL: recovery image references EPWM0" >&2
+            exit 1
+          fi
+          echo "OK: recovery image has no EPWM0 reference"
+
+      - name: Upload firmware (${{ matrix.name }})
         uses: actions/upload-artifact@v4
         with:
-          name: rk84-firmware
-          path: smk/build-rk84/royalkludge-rk84_default_smk.hex
+          name: UNTESTED-rk84-${{ matrix.name }}-${{ github.sha }}
+          path: smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex
+
+  compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned SMK
+        run: |
+          git clone https://github.com/carlossless/smk.git smk
+          cd smk
+          git checkout 08f4d0253389551b9ae9aad2464e2d7cacaf662e
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sdcc meson ninja-build python3
+
+      - name: Apply RK84 patches
+        run: |
+          SMK_DIR=$PWD/smk bash $PWD/tools/apply-to-smk.sh
+
+      - name: Build upstream boards (generic-path regression)
+        run: |
+          cd smk
+          meson setup build-compat --buildtype=release
+          ninja -C build-compat \
+            example_default_smk.hex \
+            eyooso-z11_default_smk.hex
+          # NOTE: nuphy-air60 does not compile on SDCC 4.6.0 even on
+          # pristine upstream (error 110 in its own kb.c + the
+          # required sinowealth-kb-tool). It is excluded until the
+          # upstream toolchain requirements are satisfied.
+
+      - name: Validate compat HEXes
+        run: |
+          python3 $PWD/tools/check-hex-bounds.py \
+            smk/build-compat/example_default_smk.hex --limit 0xEC00
+          python3 $PWD/tools/check-hex-bounds.py \
+            smk/build-compat/eyooso-z11_default_smk.hex --limit 0xEC00

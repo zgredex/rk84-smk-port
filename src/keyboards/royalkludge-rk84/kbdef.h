@@ -104,3 +104,9 @@ enum custom_keycodes {
 #ifndef RK84_RECOVERY_ONLY
 #define RK84_RECOVERY_ONLY 0
 #endif
+
+/* Recovery-only and RGB are mutually exclusive: a recovery image must
+ * not initialize or drive any RGB/PWM output. */
+#if RK84_RECOVERY_ONLY && RK84_RGB_ENABLE
+#    error "Recovery-only and RGB modes are mutually exclusive"
+#endif

@@ -26,11 +26,13 @@ static __xdata uint8_t rgb_plane[3][RGB_ROWS * RGB_COLS];
 static __xdata uint8_t rgb_phase;
 static __xdata uint8_t rgb_brightness;
 
+#if RK84_RGB_ENABLE
 static void rgb_fill_static(uint8_t c0, uint8_t c1, uint8_t c2);
 static void rgb_blank(void);
 static void rgb_pwm_enable(void);
 static void rgb_sink_enable(uint8_t phase);
 static void rgb_write_duty2(uint8_t col, uint16_t duty);
+#endif
 static uint16_t rgb_duty(uint8_t source);
 
 // ---------------------------------------------------------------------
@@ -38,6 +40,16 @@ static uint16_t rgb_duty(uint8_t source);
 // ---------------------------------------------------------------------
 void indicators_start(void)
 {
+#if RK84_RECOVERY_ONLY
+    /*
+     * Recovery-only image:
+     * - do not enable PWM0;
+     * - do not enable the matrix scanner;
+     * - leave all RGB sinks and shared outputs in the safe GPIO
+     *   state installed by user_gpio_init().
+     */
+    return;
+#else
     rgb_phase      = 0;
     rgb_brightness = 1;
 
@@ -51,19 +63,20 @@ void indicators_start(void)
      */
     rgb_fill_static(0, 0, 0);
     rgb_plane[0][0] = 64;
-#else
-    /* Matrix-only image: no sinks, no PWM outputs. */
-    rgb_fill_static(0, 0, 0);
-#endif
 
     rgb_blank();
+#else
+    /* Matrix-only image: no RGB outputs or framebuffer. */
+#endif
 
     /*
-     * Start the PWM scheduler only now: the RGB framebuffer is fully
-     * initialized, so the first interrupt never reads garbage state.
+     * Start the PWM scheduler: it drives the matrix scan (one column
+     * per interrupt). RGB render phases are handled by
+     * indicators_update_step() only when RK84_RGB_ENABLE.
      */
     PWM00CON = 0xC2;
     IEN1 |= _EPWM0;
+#endif /* RK84_RECOVERY_ONLY */
 }
 
 // ---------------------------------------------------------------------
@@ -71,11 +84,17 @@ void indicators_start(void)
 // ---------------------------------------------------------------------
 void indicators_pre_update(void)
 {
- /*
- * Blank sinks + disable PWM outputs so duty changes are not
- * visible mid-update (stock the blank routine behavior).
- */
- rgb_blank();
+#if RK84_RECOVERY_ONLY
+    return;
+#elif RK84_RGB_ENABLE
+    /*
+     * Blank sinks + disable PWM outputs so duty changes are not
+     * visible mid-update.
+     */
+    rgb_blank();
+#else
+    /* Matrix-only: no RGB outputs to blank. */
+#endif
 }
 
 bool indicators_update_step(
@@ -86,6 +105,9 @@ bool indicators_update_step(
     (void)keyboard;
     (void)matrix_col;
 
+#if RK84_RECOVERY_ONLY
+    return false;
+#else
     if (rgb_phase == 0) {
         PWM00CON = 0xC2;
     } else {
@@ -113,12 +135,17 @@ bool indicators_update_step(
     }
 
     return false;
+#endif /* RK84_RECOVERY_ONLY */
 }
 
 void indicators_post_update(void)
 {
- /* Clear the PWM interrupt flag (stock clears bit 5 of PWM00CON). */
- PWM00CON &= (uint8_t)~0x20;
+#if RK84_RECOVERY_ONLY
+    return;
+#else
+    /* Clear the PWM interrupt flag (bit 5 of PWM00CON). */
+    PWM00CON &= (uint8_t)~0x20;
+#endif
 }
 
 // ---------------------------------------------------------------------
@@ -139,8 +166,9 @@ void indicators_brightness_down(void)
 }
 
 // ---------------------------------------------------------------------
-// Static fill
+// RGB renderer helpers (only compiled when RGB is enabled)
 // ---------------------------------------------------------------------
+#if RK84_RGB_ENABLE
 static void rgb_fill_static(uint8_t c0, uint8_t c1, uint8_t c2)
 {
  for (uint8_t i = 0; i < RGB_ROWS * RGB_COLS; i++) {
@@ -192,7 +220,7 @@ static void rgb_write_duty2(uint8_t col, uint16_t duty)
 }
 
 // ---------------------------------------------------------------------
-// PWM group enable (stock the enable routine)
+// PWM group enable
 // ---------------------------------------------------------------------
 static void rgb_pwm_enable(void)
 {
@@ -223,7 +251,7 @@ static void rgb_pwm_enable(void)
 }
 
 // ---------------------------------------------------------------------
-// Sink select — phase 1-18 -> one pin; stock the sink selector map 
+// Sink select — phase 1-18 -> one pin
 // ---------------------------------------------------------------------
 static void rgb_sink_enable(uint8_t phase)
 {
@@ -292,3 +320,4 @@ static void rgb_blank(void)
  P3 &= (uint8_t)0xC0;
  P5 &= (uint8_t)0xF8;
 }
+#endif /* RK84_RGB_ENABLE */

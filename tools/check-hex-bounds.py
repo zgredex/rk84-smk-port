@@ -18,6 +18,7 @@ from pathlib import Path
 
 def iter_hex_addresses(path: Path):
     upper = 0
+    eof_seen = False
 
     for line_no, raw in enumerate(path.read_text().splitlines(), start=1):
         line = raw.strip()
@@ -31,6 +32,23 @@ def iter_hex_addresses(path: Path):
         record_type = data[3]
         payload = data[4:4 + count]
 
+        # Structural validation: declared length must match the line,
+        # and the checksum byte must make the whole record sum to 0.
+        if len(payload) != count:
+            raise ValueError(
+                f"{path}:{line_no}: record length mismatch "
+                f"(declared {count}, got {len(payload)})"
+            )
+        if sum(data) & 0xFF:
+            raise ValueError(
+                f"{path}:{line_no}: checksum mismatch"
+            )
+
+        if eof_seen:
+            raise ValueError(
+                f"{path}:{line_no}: data after EOF record"
+            )
+
         if record_type == 0x00:
             for offset in range(len(payload)):
                 yield upper + addr + offset
@@ -39,7 +57,10 @@ def iter_hex_addresses(path: Path):
                 raise ValueError(f"{path}:{line_no}: bad ELA record")
             upper = ((payload[0] << 8) | payload[1]) << 16
         elif record_type == 0x01:
+            eof_seen = True
             return
+
+    raise ValueError(f"{path}: missing EOF record (type 01)")
 
 
 def main() -> int:

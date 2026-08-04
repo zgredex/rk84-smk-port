@@ -34,10 +34,26 @@ cd smk
 git checkout 08f4d0253389551b9ae9aad2464e2d7cacaf662e
 SMK_DIR=$PWD bash ../rk84-smk-port/tools/apply-to-smk.sh
 
-meson setup build-rk84 --buildtype=release
-ninja -C build-rk84 royalkludge-rk84_default_smk.hex
+# Recovery image (first bench candidate):
+meson setup build-rk84-recovery --buildtype=release -Drk84_stage=recovery
+ninja -C build-rk84-recovery royalkludge-rk84_default_smk.hex
+
+# Matrix/6KRO stage:
+meson setup build-rk84-matrix --buildtype=release -Drk84_stage=matrix
+ninja -C build-rk84-matrix royalkludge-rk84_default_smk.hex
+
+# One-cell RGB stage:
+meson setup build-rk84-rgb --buildtype=release -Drk84_stage=rgb
+ninja -C build-rk84-rgb royalkludge-rk84_default_smk.hex
+
+# Dual reports (only after host validation on Linux/macOS/Windows):
+meson setup build-rk84-dual --buildtype=release \
+    -Drk84_stage=matrix -Drk84_dual_reports=true
+ninja -C build-rk84-dual royalkludge-rk84_default_smk.hex
+
+# Validate every image:
 python3 ../rk84-smk-port/tools/check-hex-bounds.py \
-    build-rk84/royalkludge-rk84_default_smk.hex
+    build-rk84-*/royalkludge-rk84_default_smk.hex
 ```
 
 Requires SDCC >= 4.3.0 and the meson/ninja toolchain.
@@ -56,9 +72,13 @@ Requires SDCC >= 4.3.0 and the meson/ninja toolchain.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `rk84_recovery_only` | true | USB EP0 + ID 5 + Esc+Space chord only; no PWM/matrix |
-| `rk84_rgb` | false | Enable the RGB renderer (safe one-cell bring-up first) |
-| `rk84_stock_reports` | true | Stock 16-byte NKRO format + dual-report gating |
+| `rk84_stage` | recovery | `recovery` (USB + ISP ID5 + chord only), `matrix` (scan + 6KRO), `rgb` (one-cell RGB) |
+| `rk84_dual_reports` | false | Send simultaneous RK84 EP1 6KRO and EP2 NKRO (host-test first) |
+
+Recovery image contents: normal USB descriptor set and ISP Feature ID 5,
+but **no PWM scheduler, matrix scanning, RGB output, RF, or settings
+writes**. The interface-1 route used by the verified ISP command is
+preserved.
 
 ## Status
 
