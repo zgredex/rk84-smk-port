@@ -19,13 +19,20 @@
 //
 // SMK hook mapping:
 // user_matrix_pre_scan : raise all cols HIGH, lower selected, settle
-// user_matrix_scan_col : sample A, delay, sample B, return equal or 0xFF
+// user_matrix_scan_col : sample A, delay, sample B, return equal or
+//                        MATRIX_SAMPLE_INVALID
 // user_matrix_post_scan: raise all cols HIGH, post-release delay
 //
 // Polarity: hook returns raw electrical levels (1 = released, 0 =
-// pressed). SMK does matrix[col] = ~column_state. On mismatch return
-// 0xFF so ~0xFF = 0 pressed bits (returning 0 would invert to all
-// pressed).
+// pressed). SMK does matrix[col] = ~column_state.
+//
+// INVALID SENTINEL: rows_read_levels() forces bits 6-7 high with
+// | 0xC0, so every VALID reading is in 0xC0..0xFF — including the
+// all-keys-released state 0xFF. The invalid sentinel must therefore
+// be a value no valid reading can produce: 0x00 (an impossible raw
+// value). Using 0xFF as the sentinel would collide with a genuine
+// all-released column and leave the last released key stuck forever
+// (matrix_scan_step skips sentinel writes).
 //
 // CRITICAL: RK84 strobes idle HIGH (stock ColumnsReleaseHigh the release routine).
 // The NuPhy target releases LOW — this board must do the opposite.
@@ -35,6 +42,10 @@
 #define MATRIX_COL_MASK_P2 0x3F
 #define MATRIX_COL_MASK_P3 0x3F
 #define MATRIX_COL_MASK_P5 0x07
+
+/* See the header comment: 0x00 is impossible as a raw reading (bits
+ * 6-7 are always forced high), so it is a safe invalid sentinel. */
+#define MATRIX_SAMPLE_INVALID 0x00
 
 static void columns_high(void)
 {
@@ -109,7 +120,7 @@ uint8_t user_matrix_scan_col(uint8_t col)
  second = rows_read_levels();
 
  if (first != second) {
- return 0xFF;
+     return MATRIX_SAMPLE_INVALID;
  }
 
  return first;

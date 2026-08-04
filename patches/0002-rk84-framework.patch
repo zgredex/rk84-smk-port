@@ -342,7 +342,7 @@ index 351abba..9562716 100644
 +#define dprintf(...) do { } while (0)
 +#endif
 diff --git a/src/smk/host.c b/src/smk/host.c
-index b77d4b7..3a9ef92 100644
+index b77d4b7..533e9ce 100644
 --- a/src/smk/host.c
 +++ b/src/smk/host.c
 @@ -3,8 +3,14 @@
@@ -362,7 +362,7 @@ index b77d4b7..3a9ef92 100644
  
  static __xdata report_extra_t extra_report;
  
-@@ -18,24 +24,50 @@ void host_nkro_send(__xdata report_nkro_t *report)
+@@ -18,24 +24,63 @@ void host_nkro_send(__xdata report_nkro_t *report)
      kb_send_nkro(report);
  }
  
@@ -392,26 +392,24 @@ index b77d4b7..3a9ef92 100644
  
      kb_send_extra(&extra_report);
 +    *last_sent = usage;
++}
++
++void host_system_send(uint16_t usage)
++{
++    current_system_usage = usage;
++    host_send_extra(REPORT_ID_SYSTEM, usage, &last_sent_system_usage);
  }
  
--void host_consumer_send(uint16_t usage)
-+void host_system_send(uint16_t usage)
+ void host_consumer_send(uint16_t usage)
  {
 -    if (usage == last_consumer_usage) return;
 -    last_consumer_usage = usage;
-+    current_system_usage = usage;
-+    host_send_extra(REPORT_ID_SYSTEM, usage, &last_sent_system_usage);
-+}
- 
--    extra_report.report_id = REPORT_ID_CONSUMER;
--    extra_report.usage     = usage;
-+void host_consumer_send(uint16_t usage)
-+{
 +    current_consumer_usage = usage;
 +    host_send_extra(REPORT_ID_CONSUMER, usage, &last_sent_consumer_usage);
 +}
  
--    kb_send_extra(&extra_report);
+-    extra_report.report_id = REPORT_ID_CONSUMER;
+-    extra_report.usage     = usage;
 +/* Called from the board's main-loop poll after resume/reset/config:
 + * resend the current System/Consumer state (including a release-to-zero
 + * that was dropped while suspended) so the host cannot retain a stuck
@@ -422,12 +420,26 @@ index b77d4b7..3a9ef92 100644
 +                    &last_sent_system_usage);
 +    host_send_extra(REPORT_ID_CONSUMER, current_consumer_usage,
 +                    &last_sent_consumer_usage);
++}
+ 
+-    kb_send_extra(&extra_report);
++/* Forced resync after USB bus reset / SET_CONFIGURATION: the host has
++ * forgotten ALL report state, but last_sent_*_usage still matches the
++ * current usage, so host_extra_resync() would send nothing. Poison the
++ * last-sent values so the current System/Consumer state is re-sent
++ * even when unchanged. Also safe after resume. */
++void host_extra_force_resync(void)
++{
++    last_sent_system_usage   = (uint16_t)(current_system_usage ^ 0xFFFF);
++    last_sent_consumer_usage = (uint16_t)(current_consumer_usage ^ 0xFFFF);
++
++    host_extra_resync();
  }
 diff --git a/src/smk/host.h b/src/smk/host.h
-index 00f5137..80a9bf8 100644
+index 00f5137..6a70ddd 100644
 --- a/src/smk/host.h
 +++ b/src/smk/host.h
-@@ -1,9 +1,14 @@
+@@ -1,9 +1,19 @@
  #pragma once
  
  #include <stdint.h>
@@ -442,8 +454,13 @@ index 00f5137..80a9bf8 100644
 +/* Resend current System/Consumer state after resume/reset/config so a
 + * release dropped while suspended is not lost. */
 +void host_extra_resync(void);
++
++/* Forced variant: after bus reset/SET_CONFIGURATION the host forgot
++ * all report state; poisons last-sent so current state is re-sent even
++ * when unchanged. Also safe after resume. */
++void host_extra_force_resync(void);
 diff --git a/src/smk/matrix.c b/src/smk/matrix.c
-index b1d81c1..7c47330 100644
+index b1d81c1..35b7fd5 100644
 --- a/src/smk/matrix.c
 +++ b/src/smk/matrix.c
 @@ -23,6 +23,47 @@ volatile bool                 matrix_updated;
@@ -627,12 +644,12 @@ index b1d81c1..7c47330 100644
          user_matrix_post_scan();
  
 -        matrix[current_step] = ~column_state;
-+        if (column_state == 0xFF) {
++        if (column_state == MATRIX_SAMPLE_INVALID) {
 +            /* Invalid sample (two readings disagreed). PRESERVE the
-+             * previous stable column value: writing ~0xFF = 0x00 here
-+             * would fabricate an "all keys released in this column"
-+             * event (false release followed by false re-press on the
-+             * next stable sample). */
++             * previous stable column value: writing the complement of
++             * the sentinel would fabricate an "all keys released in
++             * this column" event (false release followed by false
++             * re-press on the next stable sample). */
 +        } else {
 +            matrix[current_step] = ~column_state;
 +        }
@@ -640,7 +657,7 @@ index b1d81c1..7c47330 100644
          // keyboard_update_switches();
      }
 diff --git a/src/smk/report.c b/src/smk/report.c
-index 1e0366e..c454060 100644
+index 1e0366e..9c00216 100644
 --- a/src/smk/report.c
 +++ b/src/smk/report.c
 @@ -26,9 +26,25 @@ void send_nkro_report();
@@ -860,7 +877,7 @@ index 1e0366e..c454060 100644
  #ifdef NKRO_ENABLE
      if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
          add_key_bit(&nkro_report, key);
-@@ -216,13 +324,45 @@ void add_key_to_report(report_keyboard_t *keyboard_report, uint8_t key)
+@@ -216,13 +324,50 @@ void add_key_to_report(report_keyboard_t *keyboard_report, uint8_t key)
      }
  #endif
      add_key_byte(keyboard_report, key);
@@ -875,12 +892,17 @@ index 1e0366e..c454060 100644
 + * bitmap. Fixes the promotion bug: with six slots occupied and a
 + * seventh key held, releasing one of the six left the slot empty
 + * (the seventh was never promoted into it). The bitmap is the source
-+ * of truth for what is physically held. */
++ * of truth for what is physically held.
++ *
++ * CRITICAL: only the BOOT keys are cleared here. clear_keys_from_report()
++ * would ALSO wipe nkro_report.bits (RK84_STOCK_REPORTS clears both),
++ * erasing the very bitmap this function scans -> every held key would
++ * vanish from the report. */
 +static void rk84_rebuild_boot_slots(report_keyboard_t *keyboard_report)
 +{
 +    uint8_t slot = 0;
 +
-+    clear_keys_from_report(keyboard_report);
++    memset(keyboard_report->keys, 0, sizeof(keyboard_report->keys));
 +
 +    for (uint8_t usage = NKRO_FIRST_USAGE; usage <= NKRO_LAST_USAGE && slot < KEYBOARD_REPORT_KEYS; usage++) {
 +        uint8_t index = (uint8_t)(usage - NKRO_FIRST_USAGE);
@@ -906,7 +928,7 @@ index 1e0366e..c454060 100644
  #ifdef NKRO_ENABLE
      if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
          del_key_bit(&nkro_report, key);
-@@ -230,6 +370,7 @@ void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key)
+@@ -230,6 +375,7 @@ void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key)
      }
  #endif
      del_key_byte(keyboard_report, key);
@@ -914,7 +936,7 @@ index 1e0366e..c454060 100644
  }
  
  /** \brief clear key from report
-@@ -237,6 +378,13 @@ void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key)
+@@ -237,6 +383,13 @@ void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key)
   */
  void clear_keys_from_report(report_keyboard_t *keyboard_report)
  {
@@ -928,7 +950,7 @@ index 1e0366e..c454060 100644
  #ifdef NKRO_ENABLE
      if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
          memset(nkro_report.bits, 0, sizeof(nkro_report.bits));
-@@ -244,6 +392,7 @@ void clear_keys_from_report(report_keyboard_t *keyboard_report)
+@@ -244,6 +397,7 @@ void clear_keys_from_report(report_keyboard_t *keyboard_report)
      }
  #endif
      memset(keyboard_report->keys, 0, sizeof(keyboard_report->keys));
@@ -1018,3 +1040,20 @@ index f1791d9..bfce408 100644
  void add_key_to_report(report_keyboard_t *keyboard_report, uint8_t key);
  void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key);
  void clear_keys_from_report(report_keyboard_t *keyboard_report);
+diff --git a/src/user/user_matrix.h b/src/user/user_matrix.h
+index 25b25d5..a501b51 100644
+--- a/src/user/user_matrix.h
++++ b/src/user/user_matrix.h
+@@ -2,6 +2,12 @@
+ 
+ #include <stdint.h>
+ 
++/* Invalid-scan sentinel. rows_read_levels() forces bits 6-7 high, so
++ * every valid reading is 0xC0..0xFF; 0x00 is impossible and therefore
++ * unambiguous. matrix_scan_step() skips the matrix[col] write when the
++ * scanner returns this value (preserving the previous stable column). */
++#define MATRIX_SAMPLE_INVALID 0x00
++
+ void    user_matrix_pre_scan(uint8_t col);
+ uint8_t user_matrix_scan_col(uint8_t col);
+ void    user_matrix_post_scan();

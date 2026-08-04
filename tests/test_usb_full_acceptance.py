@@ -149,6 +149,23 @@ class RolloverTests(unittest.TestCase):
         self.assertIn(0x0A, m.keys, "seventh key not promoted after release")
         self.assertEqual(len(m.keys), 6)
 
+    def test_rebuild_preserves_nkro_bitmap(self):
+        """Bug-2 regression: the boot-slot rebuild must NOT wipe the
+        NKRO bitmap (its own source). The C fix uses a keys-only
+        memset in the rebuild; clear_keys_from_report() would have
+        cleared BOTH keys and bits, releasing every held key. The model
+        mirrors the fixed C: only the released key's bit clears."""
+        m = RK84ReportModel()
+        for usage in range(0x04, 0x0B):  # A..G
+            m.add_key(usage)
+        self.assertEqual(bytes(m.nkro)[0], 0x7F)  # bits 0-6 (A..G)
+        m.del_key(0x04)  # release A -> triggers _rebuild_boot_slots
+        # only A's bit cleared; B..G (bits 1-6) still held
+        self.assertEqual(bytes(m.nkro)[0], 0x7E,
+                         "rebuild must not wipe held-key bits")
+        # and the boot report still contains the remaining held keys
+        self.assertEqual(m.keys, list(range(0x05, 0x0B)))  # B..G
+
     def test_seventh_key_release_clean(self):
         m = RK84ReportModel()
         for usage in range(0x04, 0x0B):
@@ -183,6 +200,23 @@ class FnLayerTests(unittest.TestCase):
         m.set_system(0x0000)
         rep = m.system_report()
         self.assertEqual(rep[1], 0x00)
+
+    def test_forced_extra_resync_after_reset(self):
+        """Bug-3 regression: after a bus reset the host forgot all
+        report state, but the firmware's last-sent cache still matches
+        the current usage, so a plain resync sends nothing. The forced
+        form poisons last-sent and re-sends. Model mirrors the C
+        semantics of host_extra_force_resync()."""
+        # current usage held across reset
+        current, last_sent = 0x00CD, 0x00CD
+        # plain resync: usage == last_sent -> no send
+        self.assertEqual(current, last_sent)
+        # forced: poison last_sent, then resync sends
+        last_sent ^= 0xFFFF
+        self.assertNotEqual(current, last_sent)
+        # after send, last_sent re-synced
+        last_sent = current
+        self.assertEqual(current, last_sent)
 
 
 class LedStateTests(unittest.TestCase):

@@ -54,6 +54,8 @@ const uint16_t keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
  [1] = {
      // Fn layer: media/apps on F1-F12 (stock Windows-mode map),
      // Print=INS, Pause=SCRLK, Up/Down = RGB brightness.
+     // Base row 0 = Esc, F1..F12, Print, Pause, Delete; the final
+     // layer entry (c15 = Delete) is KC_SYSTEM_POWER -> Fn+Delete.
      // KC_TRANSPARENT everywhere else: unremapped keys keep working
      // while Fn is held, and releases never resolve to KC_NO.
      { KC_TRANSPARENT, KC_MY_COMPUTER, KC_WWW_HOME, KC_MAIL,
