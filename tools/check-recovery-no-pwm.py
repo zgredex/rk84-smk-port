@@ -34,6 +34,7 @@ PWM00CON_CA = bytes([0x90, 0xFF, 0x80, 0x74, 0xCA, 0xF0])
 
 def ihx_to_bytes(path: Path) -> bytes:
     data = bytearray()
+    upper = 0
     for line_no, raw in enumerate(path.read_text().splitlines(), start=1):
         line = raw.strip()
         if not line.startswith(":"):
@@ -59,15 +60,16 @@ def ihx_to_bytes(path: Path) -> bytes:
             raise ValueError(f"{path}:{line_no}: checksum mismatch")
 
         if typ == 0x00:
-            base = len(data)
-            if addr + count > len(data):
-                data.extend(b"\x00" * (addr + count - len(data)))
-            data[addr:addr + count] = payload
+            # Absolute address = extended-linear base + record address.
+            absolute = upper + addr
+            if absolute + count > len(data):
+                data.extend(b"\x00" * (absolute + count - len(data)))
+            data[absolute:absolute + count] = payload
         elif typ == 0x04:
             # Extended linear address; update the segment base.
-            base_addr = ((payload[0] << 8) | payload[1]) << 16
-            while len(data) < base_addr:
-                data.extend(b"\x00" * min(0x10000, base_addr - len(data)))
+            if count != 2:
+                raise ValueError(f"{path}:{line_no}: bad ELA record")
+            upper = ((payload[0] << 8) | payload[1]) << 16
         elif typ == 0x01:
             if count != 0 or addr != 0:
                 raise ValueError(f"{path}:{line_no}: malformed EOF record")
