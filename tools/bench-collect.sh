@@ -164,7 +164,10 @@ sys.exit(0 if walk(data) else 1)
 if [[ -n "$FLASH_HEX" ]]; then
     echo "--- enter-isp ---" | tee -a "$OUT/session.txt"
     set +e
-    "$SINOWISP" enter-isp --normal-pid 0x0059 --normal-iface 1 \
+    # enter-isp takes no subcommand args; the normal-PID/interface are
+    # TOP-LEVEL options (defaults 0x258a / 0x0059 / iface 1 are correct
+    # for the RK84, so they are omitted unless overridden).
+    "$SINOWISP" enter-isp \
         >> "$OUT/enter-isp.log" 2>&1
     enter_rc=$?
     set -e

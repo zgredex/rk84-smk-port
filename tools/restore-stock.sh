@@ -79,7 +79,7 @@ sys.exit(0 if walk(data) else 1)
 
 echo "--- enter-isp ---" | tee -a "$LOGDIR/session.txt"
 set +e
-"$SINOWISP" enter-isp --normal-pid 0x0059 --normal-iface 1 >> "$LOGDIR/enter-isp.log" 2>&1
+"$SINOWISP" enter-isp >> "$LOGDIR/enter-isp.log" 2>&1
 enter_rc=$?
 set -e
 
