@@ -1,5 +1,5 @@
 diff --git a/meson.build b/meson.build
-index afa6bfd..a20f093 100644
+index afa6bfd..c07d116 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -17,11 +17,37 @@ default_options = {
@@ -58,7 +58,7 @@ index afa6bfd..a20f093 100644
  
  # Host-side generator that bakes per-device LED animation geometry into ROM tables
  # (see utils/led_geometry_gen.c). Compiled once with the host compiler at configure
-@@ -181,6 +209,56 @@ foreach part : parts
+@@ -181,6 +209,60 @@ foreach part : parts
              '-DUSB_PID=@0@'.format(options['product_id']),
          ]
  
@@ -110,12 +110,16 @@ index afa6bfd..a20f093 100644
 +        endif
 +        if options.get('rk84_active_keycode_cache', false)
 +            cc_args += '-DSMK_ACTIVE_KEYCODE_CACHE=1'
++            # Fn-first: process momentary layer-key transitions before
++            # ordinary keys in the same scan frame (same-frame Fn+media
++            # chords resolve as media, not plain keys).
++            cc_args += '-DSMK_LAYER_KEYS_FIRST=1'
 +        endif
 +
          wireless = options.get('wireless', '')
          if wireless == 'bk3632'
              src_main += src_platform_bk3632
-@@ -260,10 +338,16 @@ foreach part : parts
+@@ -260,10 +342,16 @@ foreach part : parts
          )
  
          flash_target_name = '@0@flash'.format(prefix)

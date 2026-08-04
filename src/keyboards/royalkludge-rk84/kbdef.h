@@ -138,3 +138,14 @@ enum custom_keycodes {
  * (kb.c) that the framework's USB ISR calls on SUSPIF/RESMIF.
  * RK84_USB_HOOKS is supplied via cc_args (meson) so the framework's
  * usb.c — which does not include kbdef.h — sees it too. */
+
+/* Startup latency: recovery keeps the upstream 1000 ms USB settle
+ * (ISP safety); all other stages shorten both boot delays so the
+ * keyboard is usable almost immediately. */
+#ifdef RK84_RECOVERY_ONLY
+#define RK84_BOOT_DELAY_MS 1000
+#define RK84_POST_INIT_DELAY_MS 1000
+#else
+#define RK84_BOOT_DELAY_MS 20
+#define RK84_POST_INIT_DELAY_MS 20
+#endif

@@ -1,3 +1,48 @@
+diff --git a/src/kb/kb.h b/src/kb/kb.h
+index 1c2e8c6..45b5df8 100644
+--- a/src/kb/kb.h
++++ b/src/kb/kb.h
+@@ -12,3 +12,12 @@ void kb_send_extra(__xdata report_extra_t *report);
+ bool kb_process_record(uint16_t keycode, bool key_pressed);
+ void kb_update_switches();
+ void kb_update();
++
++/* Board hooks used by the framework (matrix.c / host.c). Only defined
++ * when the board declares RK84_USB_HOOKS (RK84 usb stage). */
++#ifdef RK84_USB_HOOKS
++/* Physical key-down transition (matrix press edge). */
++void rk84_usb_key_press(void);
++/* True while the board drops reports (USB suspended). */
++bool rk84_usb_is_suspended(void);
++#endif
+diff --git a/src/main.c b/src/main.c
+index ceb44f4..2e0639b 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -61,7 +61,11 @@ void main()
+     dprintf("SMK v" TOSTRING(SMK_VERSION) "\r\n");
+     dprintf("DEVICE vId:" TOSTRING(USB_VID) " pId:" TOSTRING(USB_PID) "\n\r");
+ 
++#ifdef RK84_BOOT_DELAY_MS
++    delay_ms(RK84_BOOT_DELAY_MS);
++#else
+     delay_ms(1000);
++#endif
+ 
+     kb_init();
+ 
+@@ -72,7 +76,11 @@ void main()
+     // enable pwm and interrupt (driving matrix scan)
+     indicators_start();
+ 
++#ifdef RK84_POST_INIT_DELAY_MS
++    delay_ms(RK84_POST_INIT_DELAY_MS);
++#else
+     delay_ms(1000);
++#endif
+ 
+     while (1) {
+         CLR_WDT();
 diff --git a/src/platform/sh68f90a/flash.c b/src/platform/sh68f90a/flash.c
 index ac8b5fb..d58d840 100644
 --- a/src/platform/sh68f90a/flash.c
@@ -12,7 +57,7 @@ index ac8b5fb..d58d840 100644
  }
  
 diff --git a/src/platform/sh68f90a/usb.c b/src/platform/sh68f90a/usb.c
-index 4244b76..90e274e 100644
+index 4244b76..dadeaa3 100644
 --- a/src/platform/sh68f90a/usb.c
 +++ b/src/platform/sh68f90a/usb.c
 @@ -11,6 +11,21 @@
@@ -116,7 +161,21 @@ index 4244b76..90e274e 100644
  };
  
  usb_descriptor_set_c usb_descriptor_set = {
-@@ -402,14 +419,27 @@ void usb_send_nkro(__xdata report_nkro_t *report)
+@@ -364,6 +381,13 @@ void usb_init()
+     ep0_xfer_bytes_left = 0;
+     ep0_xfer_src        = 0;
+ 
++#ifdef RK84_USB_HOOKS
++    /* Bus reset / unplug-replug / host-controller reset: the board's
++     * suspended state must be cleared or every report would be dropped
++     * after re-enumeration. ISR-safe: sets a flag only. */
++    rk84_usb_reset_hook();
++#endif
++
+     USBADDR = 0;
+     USBIE1  = (_OVERIE | _SETUPIE | _SOFIA | _RESMIE | _SUSPIE | _PBRSTIE);
+     USBIE2  = (_OEP0IE | _IEP0IE);
+@@ -402,14 +426,27 @@ void usb_send_nkro(__xdata report_nkro_t *report)
  void usb_send_extra(__xdata report_extra_t *report)
  {
      uint8_t timeout = 0;
@@ -146,16 +205,23 @@ index 4244b76..90e274e 100644
      SET_EP2_IN_RDY;
  }
  
-@@ -599,11 +629,24 @@ static void usb_setup_irq()
+@@ -599,11 +636,31 @@ static void usb_setup_irq()
      }
  }
  
 +/* Board-level suspend/resume hooks. Called from the USB ISR only when
 + * the board declares RK84_USB_HOOKS (RK84 kb.c implements them). Other
-+ * boards are unaffected: no reference, no link requirement. */
++ * boards are unaffected: no reference, no link requirement.
++ *
++ * ISR-safe contract: these hooks MUST only set single-bit flags (or
++ * perform trivially short writes). Report state mutation and USB
++ * transmission happen later in the main loop via the board's
++ * rk84_usb_mainloop_poll() (called from kb_update). */
 +#ifdef RK84_USB_HOOKS
 +void rk84_usb_suspend_hook(void);
 +void rk84_usb_resume_hook(void);
++void rk84_usb_reset_hook(void);
++void rk84_usb_config_hook(void);
 +
 +/* True when the host enabled remote wakeup via SET_FEATURE. */
 +bool usb_remote_wakeup_enabled(void)
@@ -172,7 +238,7 @@ index 4244b76..90e274e 100644
      if (temp_usbif1 != 0x00) {
          if (temp_usbif1 & _SOFIF) {
              USBIF1 &= ~_SOFIF;
-@@ -620,8 +663,14 @@ void usb_interrupt_handler() __interrupt(_INT_USB)
+@@ -620,8 +677,14 @@ void usb_interrupt_handler() __interrupt(_INT_USB)
                  usb_setup_irq();
              } else if (temp_usbif1 & _RESMIF) { // RESMIF
                  USBIF1 &= ~_RESMIF;
@@ -187,11 +253,24 @@ index 4244b76..90e274e 100644
              } else if (temp_usbif1 & _USBRSTIF) { // BUSRSTIF
                  USBIF1 &= ~_USBRSTIF;
  
+@@ -761,6 +824,12 @@ static void usb_set_configuration_handler(__xdata struct usb_req_setup *req)
+ 
+             if (active_configuration != 0) {
+                 usb_device_state = USB_DEVICE_STATE_CONFIGURED;
++#ifdef RK84_USB_HOOKS
++                /* Configured: schedule a full report resend (the bus
++                 * reset destroyed the host's report state). ISR-safe:
++                 * sets a flag only. */
++                rk84_usb_config_hook();
++#endif
+             } else {
+                 usb_device_state = USB_DEVICE_STATE_ADDRESSED;
+             }
 diff --git a/src/platform/sh68f90a/usb.h b/src/platform/sh68f90a/usb.h
-index e5230aa..f412d23 100644
+index e5230aa..6bff95a 100644
 --- a/src/platform/sh68f90a/usb.h
 +++ b/src/platform/sh68f90a/usb.h
-@@ -4,19 +4,50 @@
+@@ -4,19 +4,52 @@
  #include "report.h"
  #include <stdint.h>
  
@@ -236,6 +315,8 @@ index e5230aa..f412d23 100644
 +#ifdef RK84_USB_HOOKS
 +void rk84_usb_suspend_hook(void);
 +void rk84_usb_resume_hook(void);
++void rk84_usb_reset_hook(void);
++void rk84_usb_config_hook(void);
 +bool usb_remote_wakeup_enabled(void);
 +#endif
 +
@@ -260,8 +341,109 @@ index 351abba..9562716 100644
 +#else
 +#define dprintf(...) do { } while (0)
 +#endif
+diff --git a/src/smk/host.c b/src/smk/host.c
+index b77d4b7..3a9ef92 100644
+--- a/src/smk/host.c
++++ b/src/smk/host.c
+@@ -3,8 +3,14 @@
+ #include "kb.h"
+ #include "usb.h"
+ 
+-static __xdata uint16_t last_system_usage   = 0;
+-static __xdata uint16_t last_consumer_usage = 0;
++/* current_*_usage is the physical key state; last_sent_*_usage is what
++ * was actually transmitted. They diverge while suspended (the board
++ * drops extra reports): the release is not forgotten, it is resent on
++ * resume via host_extra_resync(). */
++static __xdata uint16_t current_system_usage   = 0;
++static __xdata uint16_t current_consumer_usage = 0;
++static __xdata uint16_t last_sent_system_usage   = 0;
++static __xdata uint16_t last_sent_consumer_usage = 0;
+ 
+ static __xdata report_extra_t extra_report;
+ 
+@@ -18,24 +24,50 @@ void host_nkro_send(__xdata report_nkro_t *report)
+     kb_send_nkro(report);
+ }
+ 
+-void host_system_send(uint16_t usage)
++/* Send a System/Consumer report when the host-side usage differs from
++ * the last actually-transmitted one. Does NOT advance last_sent when
++ * the transport drops the report (USB suspended), so the release is
++ * not lost: host_extra_resync() re-sends it after resume. */
++static void host_send_extra(uint8_t report_id, uint16_t usage,
++                            uint16_t *last_sent)
+ {
+-    if (usage == last_system_usage) return;
+-    last_system_usage = usage;
++    if (usage == *last_sent) {
++        return;   /* already in sync; nothing to do */
++    }
++
++#ifdef RK84_USB_HOOKS
++    if (rk84_usb_is_suspended()) {
++        return;   /* dropped; keep last_sent stale so it resends */
++    }
++#endif
+ 
+-    extra_report.report_id = REPORT_ID_SYSTEM;
++    extra_report.report_id = report_id;
+     extra_report.usage     = usage;
+ 
+     kb_send_extra(&extra_report);
++    *last_sent = usage;
+ }
+ 
+-void host_consumer_send(uint16_t usage)
++void host_system_send(uint16_t usage)
+ {
+-    if (usage == last_consumer_usage) return;
+-    last_consumer_usage = usage;
++    current_system_usage = usage;
++    host_send_extra(REPORT_ID_SYSTEM, usage, &last_sent_system_usage);
++}
+ 
+-    extra_report.report_id = REPORT_ID_CONSUMER;
+-    extra_report.usage     = usage;
++void host_consumer_send(uint16_t usage)
++{
++    current_consumer_usage = usage;
++    host_send_extra(REPORT_ID_CONSUMER, usage, &last_sent_consumer_usage);
++}
+ 
+-    kb_send_extra(&extra_report);
++/* Called from the board's main-loop poll after resume/reset/config:
++ * resend the current System/Consumer state (including a release-to-zero
++ * that was dropped while suspended) so the host cannot retain a stuck
++ * usage. */
++void host_extra_resync(void)
++{
++    host_send_extra(REPORT_ID_SYSTEM, current_system_usage,
++                    &last_sent_system_usage);
++    host_send_extra(REPORT_ID_CONSUMER, current_consumer_usage,
++                    &last_sent_consumer_usage);
+ }
+diff --git a/src/smk/host.h b/src/smk/host.h
+index 00f5137..80a9bf8 100644
+--- a/src/smk/host.h
++++ b/src/smk/host.h
+@@ -1,9 +1,14 @@
+ #pragma once
+ 
+ #include <stdint.h>
++#include <stdbool.h>
+ #include "report.h"
+ 
+ void host_keyboard_send(__xdata report_keyboard_t *report);
+ void host_nkro_send(__xdata report_nkro_t *report);
+ void host_system_send(uint16_t usage);
+ void host_consumer_send(uint16_t usage);
++
++/* Resend current System/Consumer state after resume/reset/config so a
++ * release dropped while suspended is not lost. */
++void host_extra_resync(void);
 diff --git a/src/smk/matrix.c b/src/smk/matrix.c
-index b1d81c1..63860ab 100644
+index b1d81c1..7c47330 100644
 --- a/src/smk/matrix.c
 +++ b/src/smk/matrix.c
 @@ -23,6 +23,47 @@ volatile bool                 matrix_updated;
@@ -327,12 +509,21 @@ index b1d81c1..63860ab 100644
  }
  
  matrix_col_t matrix_get_col(uint8_t col)
-@@ -47,17 +96,36 @@ matrix_col_t matrix_can_read()
+@@ -47,17 +96,45 @@ matrix_col_t matrix_can_read()
  
  void process_key_state(uint8_t row, uint8_t col, bool pressed)
  {
 -    uint16_t qcode = keymaps[0][row][col];
 +    uint16_t qcode;
++
++#ifdef RK84_USB_HOOKS
++    /* Physical key-down transition: used by the board for remote wake
++     * detection (must fire even for layer keys that never enter the
++     * HID report). ISR-independent: called from the main loop. */
++    if (pressed) {
++        rk84_usb_key_press();
++    }
++#endif
 +
 +#if SMK_ACTIVE_KEYCODE_CACHE
 +    if (pressed) {
@@ -367,7 +558,7 @@ index b1d81c1..63860ab 100644
              action_layer = 0;
          }
  
-@@ -65,14 +133,6 @@ void process_key_state(uint8_t row, uint8_t col, bool pressed)
+@@ -65,14 +142,6 @@ void process_key_state(uint8_t row, uint8_t col, bool pressed)
          return;
      }
  
@@ -382,8 +573,74 @@ index b1d81c1..63860ab 100644
      if (!kb_process_record(qcode, pressed)) {
          return;
      }
+@@ -138,6 +207,34 @@ uint8_t matrix_task()
+         return matrix_changed;
+     }
+ 
++    /* Two-pass processing so momentary layer keys (Fn) are applied
++     * before ordinary keys in the same frame. With single-pass column
++     * order, Fn (column 9) is processed after F1-F8 (columns 0-7), so
++     * pressing Fn+F8 in one frame emitted plain F8. Layer transitions
++     * first, then ordinary keys (RK84-only; gated). */
++#ifdef SMK_LAYER_KEYS_FIRST
++    for (uint8_t col = 0; col < MATRIX_COLS; col++) {
++        __xdata const matrix_col_t current_col = matrix_get_col(col);
++        __xdata const matrix_col_t col_changes = current_col ^ matrix_previous[col];
++
++        if (!col_changes) {
++            continue;
++        }
++
++        __xdata matrix_col_t row_mask = 1;
++
++        for (uint8_t row = 0; row < MATRIX_ROWS; row++, row_mask <<= 1) {
++            if (col_changes & row_mask) {
++                __xdata const bool key_pressed = current_col & row_mask;
++
++                if (IS_QK_MOMENTARY(resolve_keycode(row, col))) {
++                    process_key_state(row, col, key_pressed);
++                }
++            }
++        }
++    }
++#endif /* SMK_LAYER_KEYS_FIRST */
++
+     for (uint8_t col = 0; col < MATRIX_COLS; col++) {
+         __xdata const matrix_col_t current_col = matrix_get_col(col);
+         __xdata const matrix_col_t col_changes = current_col ^ matrix_previous[col];
+@@ -152,7 +249,13 @@ uint8_t matrix_task()
+             if (col_changes & row_mask) {
+                 __xdata const bool key_pressed = current_col & row_mask;
+ 
++#ifdef SMK_LAYER_KEYS_FIRST
++                if (!IS_QK_MOMENTARY(resolve_keycode(row, col))) {
++                    process_key_state(row, col, key_pressed);
++                }
++#else
+                 process_key_state(row, col, key_pressed);
++#endif
+             }
+         }
+ 
+@@ -175,7 +278,15 @@ void matrix_scan_step()
+ 
+         user_matrix_post_scan();
+ 
+-        matrix[current_step] = ~column_state;
++        if (column_state == 0xFF) {
++            /* Invalid sample (two readings disagreed). PRESERVE the
++             * previous stable column value: writing ~0xFF = 0x00 here
++             * would fabricate an "all keys released in this column"
++             * event (false release followed by false re-press on the
++             * next stable sample). */
++        } else {
++            matrix[current_step] = ~column_state;
++        }
+ 
+         // keyboard_update_switches();
+     }
 diff --git a/src/smk/report.c b/src/smk/report.c
-index 1e0366e..a7c18a3 100644
+index 1e0366e..c454060 100644
 --- a/src/smk/report.c
 +++ b/src/smk/report.c
 @@ -26,9 +26,25 @@ void send_nkro_report();
@@ -603,7 +860,7 @@ index 1e0366e..a7c18a3 100644
  #ifdef NKRO_ENABLE
      if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
          add_key_bit(&nkro_report, key);
-@@ -216,6 +324,7 @@ void add_key_to_report(report_keyboard_t *keyboard_report, uint8_t key)
+@@ -216,13 +324,45 @@ void add_key_to_report(report_keyboard_t *keyboard_report, uint8_t key)
      }
  #endif
      add_key_byte(keyboard_report, key);
@@ -611,8 +868,30 @@ index 1e0366e..a7c18a3 100644
  }
  
  /** \brief del key from report
-@@ -223,6 +332,13 @@ void add_key_to_report(report_keyboard_t *keyboard_report, uint8_t key)
+  *
   */
++#ifdef RK84_STOCK_REPORTS
++/* Rebuild the six boot-report slots from the complete held-key NKRO
++ * bitmap. Fixes the promotion bug: with six slots occupied and a
++ * seventh key held, releasing one of the six left the slot empty
++ * (the seventh was never promoted into it). The bitmap is the source
++ * of truth for what is physically held. */
++static void rk84_rebuild_boot_slots(report_keyboard_t *keyboard_report)
++{
++    uint8_t slot = 0;
++
++    clear_keys_from_report(keyboard_report);
++
++    for (uint8_t usage = NKRO_FIRST_USAGE; usage <= NKRO_LAST_USAGE && slot < KEYBOARD_REPORT_KEYS; usage++) {
++        uint8_t index = (uint8_t)(usage - NKRO_FIRST_USAGE);
++
++        if (nkro_report.bits[index >> 3] & (1 << (index & 7))) {
++            keyboard_report->keys[slot++] = usage;
++        }
++    }
++}
++#endif
++
  void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key)
  {
 +#ifdef RK84_STOCK_REPORTS
@@ -620,12 +899,14 @@ index 1e0366e..a7c18a3 100644
 +
 +#ifdef NKRO_ENABLE
 +    del_key_bit(&nkro_report, key);
++    /* Promote any held key into the freed slot. */
++    rk84_rebuild_boot_slots(keyboard_report);
 +#endif
 +#else
  #ifdef NKRO_ENABLE
      if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
          del_key_bit(&nkro_report, key);
-@@ -230,6 +346,7 @@ void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key)
+@@ -230,6 +370,7 @@ void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key)
      }
  #endif
      del_key_byte(keyboard_report, key);
@@ -633,7 +914,7 @@ index 1e0366e..a7c18a3 100644
  }
  
  /** \brief clear key from report
-@@ -237,6 +354,13 @@ void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key)
+@@ -237,6 +378,13 @@ void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key)
   */
  void clear_keys_from_report(report_keyboard_t *keyboard_report)
  {
@@ -647,7 +928,7 @@ index 1e0366e..a7c18a3 100644
  #ifdef NKRO_ENABLE
      if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
          memset(nkro_report.bits, 0, sizeof(nkro_report.bits));
-@@ -244,6 +368,7 @@ void clear_keys_from_report(report_keyboard_t *keyboard_report)
+@@ -244,6 +392,7 @@ void clear_keys_from_report(report_keyboard_t *keyboard_report)
      }
  #endif
      memset(keyboard_report->keys, 0, sizeof(keyboard_report->keys));

@@ -49,12 +49,24 @@ class RK84ReportModel:
         if usage not in self.keys and len(self.keys) < KEYBOARD_REPORT_KEYS:
             self.keys.append(usage)
 
+    def _rebuild_boot_slots(self):
+        """Mirror rk84_rebuild_boot_slots(): regenerate the six boot
+        slots from the complete held-key NKRO bitmap (ascending usage).
+        Fixes the promotion bug: a seventh held key is promoted when a
+        slot frees (the C fix in report.c)."""
+        held = [u for u in range(NKRO_FIRST_USAGE, NKRO_LAST_USAGE + 1)
+                if self.nkro[u - NKRO_FIRST_USAGE >> 3] &
+                   (1 << ((u - NKRO_FIRST_USAGE) & 7))]
+        self.keys = held[:KEYBOARD_REPORT_KEYS]
+
     def del_key(self, usage: int):
         if self.nkro_usage_valid(usage):
             idx = usage - NKRO_FIRST_USAGE
             self.nkro[idx >> 3] &= ~(1 << (idx & 7))
         if usage in self.keys:
             self.keys.remove(usage)
+        # promote any held key into the freed slot (bug-4 fix)
+        self._rebuild_boot_slots()
 
     def add_mods(self, mask: int):
         self.mods |= mask

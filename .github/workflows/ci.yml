@@ -29,6 +29,7 @@ jobs:
             tests.test_matrix_model \
             tests.test_report_model \
             tests.test_rgb_model \
+            tests.test_usb_full_acceptance \
             2>&1 | tee test.log
           ! grep -qE '^FAILED|errors=' test.log || exit 1
 

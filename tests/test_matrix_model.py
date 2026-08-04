@@ -137,18 +137,20 @@ class StickyKeyTests(unittest.TestCase):
 
 
 class SameFrameTests(unittest.TestCase):
-    def test_fn_and_f8_same_frame_documented_scan_order(self):
+    def test_fn_and_f8_same_frame_is_media(self):
         """Fn (col 9) and F8 (col 8) change in the same completed frame.
-        The firmware processes columns ascending: F8 (col 8) is handled
-        FIRST while layer 0 is active, so it resolves as plain F8.
-        This is DOCUMENTED scan-order behavior (Option B), not a bug."""
+        Bug-7 fix (SMK_LAYER_KEYS_FIRST): the momentary layer-key
+        transition is processed FIRST, so F8 resolves as its Fn-layer
+        media action instead of plain F8."""
         m = RK84MatrixModel()
         m.process_frame([
             (*POS_F8, True),
             (*POS_FN, True),
         ])
-        # F8 was pressed before Fn took effect -> plain F8 event
-        self.assertIn((KC["KC_F8"], True), m.report_log)
+        # F8 press now resolves AFTER Fn took effect -> media action
+        # (KC_MEDIA_PLAY_PAUSE = 0xAE), not plain F8 (KC_F8 = 0x41)
+        self.assertIn((0xAE, True), m.report_log, "F8 must resolve to its Fn media action")
+        self.assertNotIn((KC["KC_F8"], True), m.report_log, "F8 must not emit plain F8")
         # releases balance, nothing stuck
         m.process_frame([
             (*POS_FN, False),

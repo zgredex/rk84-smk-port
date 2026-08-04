@@ -3,11 +3,12 @@
 #include "kbdef.h"
 #include "report.h"
 #include "usb.h"
+#include "host.h"
 #include "keyboard.h"
 
 // =====================================================================
 // RK84 kb.c — board layer: report routing, lock LEDs, brightness,
-// USB suspend/resume and host-gated remote wake.
+// USB suspend/resume, remote wake, reset/config resynchronization.
 //
 // Stages:
 //   recovery: no reports, no RGB, no scan (nothing here is used).
@@ -21,6 +22,15 @@
 //   Fn+Down -> keyboard RGB brightness down
 // When RGB is disabled these update a stored value only and never
 // drive any LED output (deliberate no-op for the usb stage).
+//
+// Suspend strategy: the matrix scan KEEPS RUNNING while suspended so
+// key presses can be detected (required for remote wake). Power is
+// saved by suppressing report transmission. The first physical key
+// press with remote wake enabled asserts USBCON._WKUP exactly once.
+//
+// ISR contract: the USB hooks set single-bit flags ONLY. All report
+// state mutation and USB transmission happen in the main loop via
+// rk84_usb_mainloop_poll() (called from kb_update()).
 // =====================================================================
 
 extern void indicators_brightness_up(void);
@@ -71,34 +81,20 @@ bool rk84_usb_scroll_lock(void)
 #endif /* RK84_USB_FULL */
 
 // =====================================================================
-// USB suspend / resume and host-gated remote wake (wired only).
-//
-// Suspend strategy: the matrix scan KEEPS RUNNING while suspended so
-// key presses can be detected (required for remote wake). Power is
-// saved by suppressing report transmission — nothing is sent to the
-// host while suspended. The first press with remote wake enabled
-// asserts the USB resume signal (USBCON._WKUP) exactly once.
-//
-// Resume (host-driven): force a full report re-send (poison duplicate
-// suppression) so a key held across suspend is re-delivered, then
-// re-enable report transmission.
-//
-// The suspend hook deliberately does NOT stop EPWM0: with the scan
-// stopped, no key press could ever be observed and remote wake would
-// be dead. Stopping the scan is only correct for deep sleep (Stage 5
-// wireless territory), not for USB remote-wake operation.
+// USB suspend / resume / reset / config + remote wake (wired only).
 // =====================================================================
 #if RK84_USB_FULL
 #include "sh68f90a.h"
 
 static __bit rk84_usb_suspended;
 static __bit rk84_usb_wake_signalled;
-static __bit rk84_usb_pending_wake;
+static __bit rk84_usb_pending_wake;    /* physical key-down while suspended */
+static __bit rk84_usb_resync_needed;   /* resume/reset/config: resend state */
+
+/* ---- ISR hooks: flags only ---- */
 
 void rk84_usb_suspend_hook(void)
 {
-    /* Stay in the low-activity state: scan continues (key detection),
-     * reports suppressed. Remote wake may fire on the first press. */
     rk84_usb_suspended      = 1;
     rk84_usb_wake_signalled = 0;
     rk84_usb_pending_wake   = 0;
@@ -106,44 +102,38 @@ void rk84_usb_suspend_hook(void)
 
 void rk84_usb_resume_hook(void)
 {
-    /* Host-driven resume (RESMIF): force the next report to transmit
-     * even if it matches the last sent one, so a key held across
-     * suspend is re-delivered. Re-enable report transmission. */
-    report_force_resend();
-    rk84_usb_suspended = 0;
+    rk84_usb_suspended    = 0;
+    rk84_usb_resync_needed = 1;
 }
 
-/* Report path: while suspended, drop the report but remember a key is
- * pressed so kb_update_switches() can issue remote wake. */
-static void rk84_usb_gate_report(const uint8_t *report, uint8_t len)
+void rk84_usb_reset_hook(void)
 {
-    uint8_t i;
-    bool any_pressed = false;
-
-    if (!rk84_usb_suspended) {
-        return;
-    }
-    for (i = 0; i < len; ++i) {
-        if (report[i] != 0) {
-            any_pressed = true;
-            break;
-        }
-    }
-    if (any_pressed) {
-        rk84_usb_pending_wake = 1;
-    }
+    /* Bus reset / unplug / host reset: the host lost all report state.
+     * Clear suspend so reports are not dropped; schedule a resend. */
+    rk84_usb_suspended      = 0;
+    rk84_usb_pending_wake   = 0;
+    rk84_usb_wake_signalled = 0;
+    rk84_usb_resync_needed  = 1;
 }
-#endif /* RK84_USB_FULL — end of suspend state + hooks */
 
-// =====================================================================
-// Report routing (ALL stages). USB_full additionally gates reports
-// while suspended (see above).
-// =====================================================================
+void rk84_usb_config_hook(void)
+{
+    /* SET_CONFIGURATION(1): device (re)configured — resend full state. */
+    rk84_usb_suspended      = 0;
+    rk84_usb_resync_needed  = 1;
+}
+#endif /* RK84_USB_FULL — end of suspend-state block (hooks above) */
+
+/* ---- report path (ALL stages) ---- */
+
+/* While suspended (usb stage only), drop the report. Physical key-down
+ * is recorded via rk84_usb_key_press() (matrix transitions), not by
+ * scanning report bytes (an empty NKRO packet starts with report ID 6
+ * and would look like a pressed key). */
 void kb_send_report(__xdata report_keyboard_t *report)
 {
 #if RK84_USB_FULL
     if (rk84_usb_suspended) {
-        rk84_usb_gate_report(report->raw, sizeof(report_keyboard_t));
         return;
     }
 #endif
@@ -154,53 +144,68 @@ void kb_send_nkro(__xdata report_nkro_t *report)
 {
 #if RK84_USB_FULL
     if (rk84_usb_suspended) {
-        rk84_usb_gate_report(report->raw, sizeof(report_nkro_t));
         return;
     }
 #endif
     usb_send_nkro(report);
 }
 
+/* Returns true while reports are dropped (USB suspended). host.c uses
+ * this to keep its last-sent cache stale so extra reports resend. */
+#if RK84_USB_FULL
+bool rk84_usb_is_suspended(void)
+{
+    return rk84_usb_suspended;
+}
+#endif
+
 void kb_send_extra(__xdata report_extra_t *report)
 {
 #if RK84_USB_FULL
     if (rk84_usb_suspended) {
-        return;  /* no Consumer/System traffic while suspended */
+        return;   /* dropped; host.c keeps last_sent stale */
     }
 #endif
     usb_send_extra(report);
 }
 
-// =====================================================================
-// Remote wake (USB_full only)
-// =====================================================================
+/* ---- physical key transitions (from matrix.c via kb_process_record
+ *      on the press edge) ---- */
 #if RK84_USB_FULL
-/* Called from kb_update_switches() every main-loop pass. Issues the
- * USB resume signal on the first key press observed while suspended,
- * only if the host enabled remote wakeup. Signalled exactly once. */
-void rk84_usb_wake_on_key(void)
+void rk84_usb_key_press(void)
 {
-    if (!rk84_usb_suspended || rk84_usb_wake_signalled) {
-        return;
+    if (rk84_usb_suspended) {
+        rk84_usb_pending_wake = 1;
     }
-    if (!rk84_usb_pending_wake) {
-        return;
-    }
-    if (!usb_remote_wakeup_enabled()) {
-        /* Host did not enable remote wake: no resume signal. The key
-         * press stays gated until the host resumes the bus itself. */
-        return;
-    }
-    /* First press while suspended + host enabled -> assert resume. */
-    USBCON |= _WKUP;
-    rk84_usb_wake_signalled = 1;
 }
 
-/* Board-level switch polling: called from the main loop. The matrix
- * scan keeps detecting presses while suspended; the report gate above
- * records them and this function turns the first one into a wake. */
-void kb_update_switches(void)
+/* ---- main-loop poll (called from kb_update() every pass) ---- */
+
+void rk84_usb_mainloop_poll(void)
 {
-    rk84_usb_wake_on_key();
+    if (rk84_usb_resync_needed) {
+        rk84_usb_resync_needed = 0;
+        /* Force + send the full keyboard state (a key held across
+         * suspend/reset produces no new matrix transition, so the
+         * normal transition path would never transmit it). */
+        report_force_resend();
+        send_keyboard_report();
+        /* Resend System/Consumer so a release dropped while suspended
+         * is not lost on the host. */
+        host_extra_resync();
+    }
+
+    /* Remote wake: first physical press while suspended + host enabled
+     * -> assert the resume signal exactly once. */
+    if (rk84_usb_suspended && !rk84_usb_wake_signalled &&
+        rk84_usb_pending_wake && usb_remote_wakeup_enabled()) {
+        USBCON |= _WKUP;
+        rk84_usb_wake_signalled = 1;
+    }
+}
+
+void kb_update(void)
+{
+    rk84_usb_mainloop_poll();
 }
 #endif /* RK84_USB_FULL */

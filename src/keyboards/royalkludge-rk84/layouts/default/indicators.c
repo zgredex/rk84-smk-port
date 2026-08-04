@@ -22,7 +22,12 @@
 // array names can be corrected).
 // =====================================================================
 
+#if RK84_RGB_ENABLE
+/* RGB framebuffer: 3 planes x 126 LEDs. Only allocated when RGB is
+ * enabled — the usb stage claims "no framebuffer" and must not spend
+ * 378 bytes of XRAM on one. */
 static __xdata uint8_t rgb_plane[3][RGB_ROWS * RGB_COLS];
+#endif
 static __xdata uint8_t rgb_phase;
 static __xdata uint8_t rgb_brightness;
 

@@ -37,6 +37,8 @@ class RK84MatrixModel:
         self.hid_keys = []  # keycodes in the HID report
         self.report_log = []  # (keycode, pressed) events
         self.recovery_only = recovery_only
+        # SMK_LAYER_KEYS_FIRST (bug-7 fix): Fn transitions before others
+        self.layer_keys_first = True
 
     # ------------------------------------------------------------------
     def resolve_keycode(self, row: int, col: int) -> int:
@@ -84,13 +86,22 @@ class RK84MatrixModel:
     # ------------------------------------------------------------------
     def process_frame(self, changes: list[tuple[int, int, bool]]):
         """Process a completed matrix frame like matrix_task():
-        columns in ascending order; within a column, rows ascending."""
-        by_col = {}
-        for row, col, pressed in changes:
-            by_col.setdefault(col, []).append((row, pressed))
-        for col in sorted(by_col):
-            for row, pressed in sorted(by_col[col]):
-                self.process(row, col, pressed)
+        columns in ascending order; within a column, rows ascending.
+        With SMK_LAYER_KEYS_FIRST (bug-7 fix) momentary layer-key
+        transitions are processed BEFORE ordinary keys, so a same-frame
+        Fn+media chord resolves as media."""
+        if self.layer_keys_first:
+            layer = [c for c in changes
+                     if is_momentary(self.resolve_keycode(c[0], c[1]))]
+            rest = [c for c in changes
+                    if not is_momentary(self.resolve_keycode(c[0], c[1]))]
+            ordered = layer + rest
+        else:
+            ordered = changes
+        # process in the given (already ordered) sequence; the C fix
+        # runs the layer pass before the ordinary pass, not per-column
+        for row, col, pressed in ordered:
+            self.process(row, col, pressed)
 
     def stuck_keys(self) -> list:
         held_codes = list(self.held.values())
