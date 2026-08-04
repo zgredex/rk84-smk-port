@@ -27,18 +27,27 @@ def iter_hex_addresses(path: Path):
             raise ValueError(f"{path}:{line_no}: invalid Intel HEX line")
 
         data = bytes.fromhex(line[1:])
+
+        # Total record length: count + addr(2) + type(1) + checksum(1).
+        # A line like ":00000000" (4 bytes) or ":0000000000" (5 bytes
+        # with a zero sum) must be rejected before unpacking.
+        if len(data) < 5:
+            raise ValueError(f"{path}:{line_no}: truncated Intel HEX record")
+
         count = data[0]
         addr = (data[1] << 8) | data[2]
         record_type = data[3]
+
+        if len(data) != count + 5:
+            raise ValueError(
+                f"{path}:{line_no}: record length mismatch "
+                f"(expected {count + 5} bytes, got {len(data)})"
+            )
+
         payload = data[4:4 + count]
 
         # Structural validation: declared length must match the line,
         # and the checksum byte must make the whole record sum to 0.
-        if len(payload) != count:
-            raise ValueError(
-                f"{path}:{line_no}: record length mismatch "
-                f"(declared {count}, got {len(payload)})"
-            )
         if sum(data) & 0xFF:
             raise ValueError(
                 f"{path}:{line_no}: checksum mismatch"
@@ -50,21 +59,35 @@ def iter_hex_addresses(path: Path):
             )
 
         if record_type == 0x00:
+            # Zero-length data records carry no addresses and can pad a
+            # malformed file; reject them (strict mode for a flash
+            # safety checker).
+            if count == 0:
+                raise ValueError(f"{path}:{line_no}: zero-length data record")
             for offset in range(len(payload)):
                 yield upper + addr + offset
         elif record_type == 0x04:
             if len(payload) != 2:
                 raise ValueError(f"{path}:{line_no}: bad ELA record")
             upper = ((payload[0] << 8) | payload[1]) << 16
+        elif record_type == 0x02:
+            # Extended segment address: (payload << 4) * 16.
+            if len(payload) != 2:
+                raise ValueError(f"{path}:{line_no}: bad ESA record")
+            upper = ((payload[0] << 8) | payload[1]) << 4
         elif record_type == 0x01:
+            if count != 0 or addr != 0:
+                raise ValueError(f"{path}:{line_no}: malformed EOF record")
             eof_seen = True
             # Continue scanning so data after EOF is caught by the
             # eof_seen guard above.
             continue
         else:
-            # Unknown record types (e.g. 0x05 start linear address)
-            # are ignored for bounds purposes but still checksummed.
-            continue
+            # Unknown record types are rejected rather than silently
+            # ignored: an unrecognized record could hide data.
+            raise ValueError(
+                f"{path}:{line_no}: unsupported record type {record_type:#04x}"
+            )
 
     if not eof_seen:
         raise ValueError(f"{path}: missing EOF record (type 01)")

@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Assert that a recovery RK84 image contains no PWM scheduler enable.
 
-A recovery-only image must not be able to start the PWM interrupt:
+A recovery-only image must not be able to start the PWM interrupt.
+This scan checks the FINAL linked image (.ihx -> raw bytes) for the
+specific compiler encodings produced by this SDCC build:
+
   - no `ORL IEN1,#0x02`  (EPWM0 enable, IEN1 = SFR 0xA9)
   - no `MOV DPTR,#0xFF80; MOV A,#0xC2; MOVX @DPTR,A` (PWM00CON = 0xC2)
   - no `MOV DPTR,#0xFF80; MOV A,#0xCA; MOVX @DPTR,A` (PWM00CON = 0xCA)
 
-The scan runs on the FINAL linked image (.ihx -> raw bytes), not on
-intermediate .rel files, so it proves the machine code the MCU will
-actually execute contains no enable path.
+Note: this is a regression check for the current compiler output, not
+a proof against arbitrary instruction sequences (e.g. loading IEN1
+through the accumulator). A simulator that traps every write to IEN1
+and 0xFF80 would be the stronger invariant.
 
 Usage:
     python3 check-recovery-no-pwm.py build/royalkludge-rk84_default_smk.ihx
@@ -35,19 +39,43 @@ def ihx_to_bytes(path: Path) -> bytes:
         if not line.startswith(":"):
             raise ValueError(f"{path}:{line_no}: invalid Intel HEX line")
         rec = bytes.fromhex(line[1:])
+
+        # Total record length: count + addr(2) + type(1) + checksum(1).
+        if len(rec) < 5:
+            raise ValueError(f"{path}:{line_no}: truncated Intel HEX record")
+
         count = rec[0]
         addr = (rec[1] << 8) | rec[2]
         typ = rec[3]
+
+        if len(rec) != count + 5:
+            raise ValueError(
+                f"{path}:{line_no}: record length mismatch "
+                f"(expected {count + 5} bytes, got {len(rec)})"
+            )
+
         payload = rec[4:4 + count]
-        if len(payload) != count or sum(rec) & 0xFF:
-            raise ValueError(f"{path}:{line_no}: bad record")
+        if sum(rec) & 0xFF:
+            raise ValueError(f"{path}:{line_no}: checksum mismatch")
+
         if typ == 0x00:
             base = len(data)
             if addr + count > len(data):
                 data.extend(b"\x00" * (addr + count - len(data)))
             data[addr:addr + count] = payload
+        elif typ == 0x04:
+            # Extended linear address; update the segment base.
+            base_addr = ((payload[0] << 8) | payload[1]) << 16
+            while len(data) < base_addr:
+                data.extend(b"\x00" * min(0x10000, base_addr - len(data)))
         elif typ == 0x01:
+            if count != 0 or addr != 0:
+                raise ValueError(f"{path}:{line_no}: malformed EOF record")
             return bytes(data)
+        else:
+            raise ValueError(
+                f"{path}:{line_no}: unsupported record type {typ:#04x}"
+            )
     raise ValueError(f"{path}: missing EOF record")
 
 
