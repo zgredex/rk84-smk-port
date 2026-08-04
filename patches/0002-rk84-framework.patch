@@ -12,7 +12,7 @@ index ac8b5fb..d58d840 100644
  }
  
 diff --git a/src/platform/sh68f90a/usb.c b/src/platform/sh68f90a/usb.c
-index 4244b76..440f085 100644
+index 4244b76..90e274e 100644
 --- a/src/platform/sh68f90a/usb.c
 +++ b/src/platform/sh68f90a/usb.c
 @@ -11,6 +11,21 @@
@@ -146,7 +146,7 @@ index 4244b76..440f085 100644
      SET_EP2_IN_RDY;
  }
  
-@@ -599,11 +629,18 @@ static void usb_setup_irq()
+@@ -599,11 +629,24 @@ static void usb_setup_irq()
      }
  }
  
@@ -156,6 +156,12 @@ index 4244b76..440f085 100644
 +#ifdef RK84_USB_HOOKS
 +void rk84_usb_suspend_hook(void);
 +void rk84_usb_resume_hook(void);
++
++/* True when the host enabled remote wakeup via SET_FEATURE. */
++bool usb_remote_wakeup_enabled(void)
++{
++    return usb_remote_wakeup;
++}
 +#endif
 +
  void usb_interrupt_handler() __interrupt(_INT_USB)
@@ -166,7 +172,7 @@ index 4244b76..440f085 100644
      if (temp_usbif1 != 0x00) {
          if (temp_usbif1 & _SOFIF) {
              USBIF1 &= ~_SOFIF;
-@@ -620,8 +657,14 @@ void usb_interrupt_handler() __interrupt(_INT_USB)
+@@ -620,8 +663,14 @@ void usb_interrupt_handler() __interrupt(_INT_USB)
                  usb_setup_irq();
              } else if (temp_usbif1 & _RESMIF) { // RESMIF
                  USBIF1 &= ~_RESMIF;
@@ -182,10 +188,10 @@ index 4244b76..440f085 100644
                  USBIF1 &= ~_USBRSTIF;
  
 diff --git a/src/platform/sh68f90a/usb.h b/src/platform/sh68f90a/usb.h
-index e5230aa..0652587 100644
+index e5230aa..f412d23 100644
 --- a/src/platform/sh68f90a/usb.h
 +++ b/src/platform/sh68f90a/usb.h
-@@ -4,19 +4,49 @@
+@@ -4,19 +4,50 @@
  #include "report.h"
  #include <stdint.h>
  
@@ -230,6 +236,7 @@ index e5230aa..0652587 100644
 +#ifdef RK84_USB_HOOKS
 +void rk84_usb_suspend_hook(void);
 +void rk84_usb_resume_hook(void);
++bool usb_remote_wakeup_enabled(void);
 +#endif
 +
  #if DEBUG == 1
@@ -376,7 +383,7 @@ index b1d81c1..63860ab 100644
          return;
      }
 diff --git a/src/smk/report.c b/src/smk/report.c
-index 1e0366e..060a42e 100644
+index 1e0366e..a7c18a3 100644
 --- a/src/smk/report.c
 +++ b/src/smk/report.c
 @@ -26,9 +26,25 @@ void send_nkro_report();
@@ -426,10 +433,22 @@ index 1e0366e..060a42e 100644
  
      /* Only send the report if there are changes to propagate to the host. */
      if (memcmp(&nkro_report, &last_nkro_report, sizeof(report_nkro_t)) != 0) {
-@@ -67,6 +88,14 @@ void send_nkro_report()
+@@ -67,6 +88,26 @@ void send_nkro_report()
  }
  #endif
  
++/* Force the next send to transmit regardless of duplicate suppression.
++ * Poison the "last sent" copies so the next state (even if identical to
++ * the previous report) is transmitted. Used after USB resume so a key
++ * held across suspend is re-delivered to the host. */
++void report_force_resend(void)
++{
++    memset(&last_report, 0xFF, sizeof(last_report));
++#ifdef NKRO_ENABLE
++    memset(&last_nkro_report, 0xFF, sizeof(last_nkro_report));
++#endif
++}
++
 +#ifdef RK84_STOCK_REPORTS
 +/** \brief RK84 NKRO usage range check (usages 0x04..0x70) */
 +static bool rk84_nkro_usage_valid(uint8_t code)
@@ -441,7 +460,7 @@ index 1e0366e..060a42e 100644
  /** \brief has_anykey
   *
   */
-@@ -77,10 +106,16 @@ uint8_t has_anykey(report_keyboard_t *keyboard_report)
+@@ -77,10 +118,16 @@ uint8_t has_anykey(report_keyboard_t *keyboard_report)
      uint8_t  lp  = sizeof(keyboard_report->keys);
  
  #ifdef NKRO_ENABLE
@@ -458,7 +477,7 @@ index 1e0366e..060a42e 100644
  #endif
  
      while (lp--) {
-@@ -94,19 +129,42 @@ uint8_t has_anykey(report_keyboard_t *keyboard_report)
+@@ -94,19 +141,42 @@ uint8_t has_anykey(report_keyboard_t *keyboard_report)
  
  /** \brief get_first_key
   *
@@ -503,7 +522,7 @@ index 1e0366e..060a42e 100644
  }
  
  /** \brief Checks if a key is pressed in the report
-@@ -121,6 +179,12 @@ bool is_key_pressed(report_keyboard_t *keyboard_report, uint8_t key)
+@@ -121,6 +191,12 @@ bool is_key_pressed(report_keyboard_t *keyboard_report, uint8_t key)
      }
  
  #ifdef NKRO_ENABLE
@@ -516,7 +535,7 @@ index 1e0366e..060a42e 100644
      if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
          if ((key >> 3) < NKRO_REPORT_BITS) {
              return nkro_report.bits[key >> 3] & 1 << (key & 7);
-@@ -128,6 +192,7 @@ bool is_key_pressed(report_keyboard_t *keyboard_report, uint8_t key)
+@@ -128,6 +204,7 @@ bool is_key_pressed(report_keyboard_t *keyboard_report, uint8_t key)
              return false;
          }
      }
@@ -524,7 +543,7 @@ index 1e0366e..060a42e 100644
  #endif
  
      for (int i = 0; i < KEYBOARD_REPORT_KEYS; i++) {
-@@ -183,8 +248,20 @@ void del_key_byte(report_keyboard_t *keyboard_report, uint8_t code)
+@@ -183,8 +260,20 @@ void del_key_byte(report_keyboard_t *keyboard_report, uint8_t code)
   */
  void add_key_bit(report_nkro_t *nkro_report, uint8_t code)
  {
@@ -547,7 +566,7 @@ index 1e0366e..060a42e 100644
      } else {
          dprintf("add_key_bit: can't add: %02X\n", code);
      }
-@@ -196,8 +273,20 @@ void add_key_bit(report_nkro_t *nkro_report, uint8_t code)
+@@ -196,8 +285,20 @@ void add_key_bit(report_nkro_t *nkro_report, uint8_t code)
   */
  void del_key_bit(report_nkro_t *nkro_report, uint8_t code)
  {
@@ -570,7 +589,7 @@ index 1e0366e..060a42e 100644
      } else {
          dprintf("del_key_bit: can't del: %02X\n", code);
      }
-@@ -209,6 +298,13 @@ void del_key_bit(report_nkro_t *nkro_report, uint8_t code)
+@@ -209,6 +310,13 @@ void del_key_bit(report_nkro_t *nkro_report, uint8_t code)
   */
  void add_key_to_report(report_keyboard_t *keyboard_report, uint8_t key)
  {
@@ -584,7 +603,7 @@ index 1e0366e..060a42e 100644
  #ifdef NKRO_ENABLE
      if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
          add_key_bit(&nkro_report, key);
-@@ -216,6 +312,7 @@ void add_key_to_report(report_keyboard_t *keyboard_report, uint8_t key)
+@@ -216,6 +324,7 @@ void add_key_to_report(report_keyboard_t *keyboard_report, uint8_t key)
      }
  #endif
      add_key_byte(keyboard_report, key);
@@ -592,7 +611,7 @@ index 1e0366e..060a42e 100644
  }
  
  /** \brief del key from report
-@@ -223,6 +320,13 @@ void add_key_to_report(report_keyboard_t *keyboard_report, uint8_t key)
+@@ -223,6 +332,13 @@ void add_key_to_report(report_keyboard_t *keyboard_report, uint8_t key)
   */
  void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key)
  {
@@ -606,7 +625,7 @@ index 1e0366e..060a42e 100644
  #ifdef NKRO_ENABLE
      if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
          del_key_bit(&nkro_report, key);
-@@ -230,6 +334,7 @@ void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key)
+@@ -230,6 +346,7 @@ void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key)
      }
  #endif
      del_key_byte(keyboard_report, key);
@@ -614,7 +633,7 @@ index 1e0366e..060a42e 100644
  }
  
  /** \brief clear key from report
-@@ -237,6 +342,13 @@ void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key)
+@@ -237,6 +354,13 @@ void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key)
   */
  void clear_keys_from_report(report_keyboard_t *keyboard_report)
  {
@@ -628,7 +647,7 @@ index 1e0366e..060a42e 100644
  #ifdef NKRO_ENABLE
      if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
          memset(nkro_report.bits, 0, sizeof(nkro_report.bits));
-@@ -244,6 +356,7 @@ void clear_keys_from_report(report_keyboard_t *keyboard_report)
+@@ -244,6 +368,7 @@ void clear_keys_from_report(report_keyboard_t *keyboard_report)
      }
  #endif
      memset(keyboard_report->keys, 0, sizeof(keyboard_report->keys));
@@ -637,7 +656,7 @@ index 1e0366e..060a42e 100644
  
  /** \brief Get mods
 diff --git a/src/smk/report.h b/src/smk/report.h
-index f1791d9..556130e 100644
+index f1791d9..bfce408 100644
 --- a/src/smk/report.h
 +++ b/src/smk/report.h
 @@ -7,8 +7,47 @@
@@ -706,3 +725,15 @@ index f1791d9..556130e 100644
  typedef union {
      uint8_t raw[EXTRA_REPORT_SIZE];
      struct {
+@@ -68,6 +98,11 @@ extern __xdata report_nkro_t     nkro_report;
+ 
+ void send_keyboard_report();
+ 
++/* Force the next report to transmit despite duplicate suppression.
++ * Poisons the last-sent copies; used after USB resume so keys held
++ * across suspend are re-delivered. */
++void report_force_resend(void);
++
+ void add_key_to_report(report_keyboard_t *keyboard_report, uint8_t key);
+ void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key);
+ void clear_keys_from_report(report_keyboard_t *keyboard_report);

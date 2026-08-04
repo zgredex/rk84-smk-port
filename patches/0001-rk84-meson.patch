@@ -1,5 +1,5 @@
 diff --git a/meson.build b/meson.build
-index afa6bfd..a2563ce 100644
+index afa6bfd..a20f093 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -17,11 +17,37 @@ default_options = {
@@ -58,7 +58,7 @@ index afa6bfd..a2563ce 100644
  
  # Host-side generator that bakes per-device LED animation geometry into ROM tables
  # (see utils/led_geometry_gen.c). Compiled once with the host compiler at configure
-@@ -181,6 +209,55 @@ foreach part : parts
+@@ -181,6 +209,56 @@ foreach part : parts
              '-DUSB_PID=@0@'.format(options['product_id']),
          ]
  
@@ -101,6 +101,7 @@ index afa6bfd..a2563ce 100644
 +        endif
 +        if options.get('rk84_usb_full', false)
 +            cc_args += '-DRK84_USB_FULL=1'
++            cc_args += '-DRK84_USB_HOOKS=1'
 +        else
 +            cc_args += '-DRK84_USB_FULL=0'
 +        endif
@@ -114,7 +115,7 @@ index afa6bfd..a2563ce 100644
          wireless = options.get('wireless', '')
          if wireless == 'bk3632'
              src_main += src_platform_bk3632
-@@ -260,10 +337,16 @@ foreach part : parts
+@@ -260,10 +338,16 @@ foreach part : parts
          )
  
          flash_target_name = '@0@flash'.format(prefix)

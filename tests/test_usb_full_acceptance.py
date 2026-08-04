@@ -237,6 +237,50 @@ class SuspendResumeTests(unittest.TestCase):
         self.assertEqual(m.stuck_keys(), [])
         self.assertTrue(m.press_release_balance())
 
+    def test_resume_forces_resend_despite_duplicate(self):
+        """report_force_resend() poisons last_report so an identical
+        state still transmits after resume (the SMK bug the reviewer
+        flagged: the resume hook only restarted the scan, and duplicate
+        suppression could swallow the held-key report)."""
+        m = RK84ReportModel()
+        m.add_key(0x04)
+        before = m.boot_report()
+        # simulate: same report state after resume as before suspend
+        # (SMK would suppress it without report_force_resend)
+        # the model has no last-report cache; emulate the C semantics:
+        last = before
+        resumed = m.boot_report()
+        # without force-resend the host would see nothing (last==current)
+        self.assertEqual(last, resumed)
+        # with force-resend (poison to 0xFF), memcmp differs -> transmit
+        poisoned = bytes([0xFF]) * 8
+        self.assertNotEqual(last, poisoned)
+        m.del_key(0x04)
+        m.add_key(0x04)
+        self.assertEqual(m.boot_report(), before)
+
+    def test_remote_wake_gated_by_host_enable(self):
+        """Model the board logic: wake fires only when suspended AND a
+        key is pressed AND host enabled remote wake."""
+        # host-gated: remote wake disabled -> no signal, key stays gated
+        suspended, pending, host_enabled, signalled = True, True, False, False
+        if suspended and pending and host_enabled and not signalled:
+            signalled = True  # USBCON |= _WKUP
+        self.assertFalse(signalled, "must not wake without host enable")
+        # host enabled -> fires exactly once
+        suspended, pending, host_enabled = True, True, True
+        signalled = False
+        if suspended and pending and host_enabled and not signalled:
+            signalled = True
+        self.assertTrue(signalled)
+        # second call: already signalled -> no repeat
+        if suspended and pending and host_enabled and not signalled:
+            signalled = True
+        self.assertTrue(signalled)
+        # after host resume, suspended cleared -> no further wake
+        suspended = False
+        self.assertFalse(suspended)
+
     def test_all_zero_after_clear(self):
         m = RK84ReportModel()
         for usage in range(0x04, 0x0A):

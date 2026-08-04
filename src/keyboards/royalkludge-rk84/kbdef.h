@@ -135,7 +135,6 @@ enum custom_keycodes {
 #endif
 
 /* The USB-full stage provides the board-level suspend/resume hooks
- * (kb.c) that the framework's USB ISR calls on SUSPIF/RESMIF. */
-#if RK84_USB_FULL
-#define RK84_USB_HOOKS 1
-#endif
+ * (kb.c) that the framework's USB ISR calls on SUSPIF/RESMIF.
+ * RK84_USB_HOOKS is supplied via cc_args (meson) so the framework's
+ * usb.c — which does not include kbdef.h — sees it too. */
