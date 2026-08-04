@@ -1,0 +1,107 @@
+diff --git a/meson.build b/meson.build
+index afa6bfd..c31fe48 100644
+--- a/meson.build
++++ b/meson.build
+@@ -22,6 +22,27 @@ parts = [
+     ['example', 'sh68f90a', ['default'], {}],
+     ['nuphy-air60', 'sh68f90a', ['default'], { 'vendor_id': '0x05ac', 'product_id': '0x024f', 'wireless': 'bk3632', 'led_rows': '5', 'led_cols': '16', 'led_cx2': '13', 'led_cy2': '4' }],
+     ['eyooso-z11', 'sh68f90a', ['default'], { 'vendor_id': '0x258a', 'product_id': '0x002a', 'led_rows': '5', 'led_cols': '14', 'led_cx2': '13', 'led_cy2': '4' }],
++    # RK84 (SH68F90A): 16x6 matrix, 21x6 LED grid, wired milestone 1.
++    # Stock USB identity via per-board options; recovery-only + no-RGB
++    # flags make the first flash candidate safe (see RESCUE.md).
++    ['royalkludge-rk84', 'sh68f90a', ['default'], {
++        'vendor_id': '0x258a',
++        'product_id': '0x0059',
++        'led_rows': '6',
++        'led_cols': '21',
++        'led_cx2': '21',
++        'led_cy2': '4',
++        'usb_bcd_device': '0x1025',
++        'usb_ep1_mps': '8',
++        'usb_ep2_mps': '16',
++        'usb_serial_index': '0',
++        'usb_manufacturer': '"SINO WEALTH"',
++        'usb_product': '"RK Bluetooth Keyboar"',
++        'usb_serial': '""',
++        'rk84_stock_reports': true,
++        'rk84_rgb': false,
++        'rk84_recovery_only': true,
++    }],
+ ]
+ 
+ # SMK
+@@ -130,7 +151,7 @@ sdar_args = ['-rc']
+ cc = find_program('sdcc', required : true)
+ sdar = find_program('sdar', required : true)
+ packihx = find_program('packihx', required : true)
+-skbt = find_program('sinowealth-kb-tool', required : true)
++skbt = find_program('sinowealth-kb-tool', required : false)
+ 
+ # Host-side generator that bakes per-device LED animation geometry into ROM tables
+ # (see utils/led_geometry_gen.c). Compiled once with the host compiler at configure
+@@ -181,6 +202,44 @@ foreach part : parts
+             '-DUSB_PID=@0@'.format(options['product_id']),
+         ]
+ 
++        # RK84-specific USB identity + build-mode options. Each is
++        # guarded by has_key() so boards without the option keep the
++        # upstream defaults (defined in src/platform/sh68f90a/usb.h).
++        if options.has_key('usb_bcd_device')
++            cc_args += '-DUSB_BCD_DEVICE=@0@'.format(options['usb_bcd_device'])
++        endif
++        if options.has_key('usb_ep1_mps')
++            cc_args += '-DUSB_EP1_MPS=@0@'.format(options['usb_ep1_mps'])
++        endif
++        if options.has_key('usb_ep2_mps')
++            cc_args += '-DUSB_EP2_MPS=@0@'.format(options['usb_ep2_mps'])
++        endif
++        if options.has_key('usb_serial_index')
++            cc_args += '-DUSB_SERIAL_INDEX=@0@'.format(options['usb_serial_index'])
++        endif
++        if options.has_key('usb_manufacturer')
++            cc_args += '-DUSB_STRING_MANUFACTURER_VALUE=@0@'.format(options['usb_manufacturer'])
++        endif
++        if options.has_key('usb_product')
++            cc_args += '-DUSB_STRING_PRODUCT_VALUE=@0@'.format(options['usb_product'])
++        endif
++        if options.has_key('usb_serial')
++            cc_args += '-DUSB_STRING_SERIAL_VALUE=@0@'.format(options['usb_serial'])
++        endif
++        if options.get('rk84_stock_reports', false)
++            cc_args += '-DRK84_STOCK_REPORTS=1'
++        endif
++        if options.get('rk84_rgb', false)
++            cc_args += '-DRK84_RGB_ENABLE=1'
++        else
++            cc_args += '-DRK84_RGB_ENABLE=0'
++        endif
++        if options.get('rk84_recovery_only', false)
++            cc_args += '-DRK84_RECOVERY_ONLY=1'
++        else
++            cc_args += '-DRK84_RECOVERY_ONLY=0'
++        endif
++
+         wireless = options.get('wireless', '')
+         if wireless == 'bk3632'
+             src_main += src_platform_bk3632
+@@ -260,10 +319,16 @@ foreach part : parts
+         )
+ 
+         flash_target_name = '@0@flash'.format(prefix)
+-        run_target(flash_target_name,
+-            command : [skbt, 'write', '-d', keyboard, '--force', hex_smk.full_path()], # TODO: try to remove the need for --force
+-            depends : hex_smk,
+-        )
++        # RK84 has no flash target: the verified recovery workflow is
++        # the sinowisp EP0 tool (see RESCUE.md), not sinowealth-kb-tool.
++        # The flash target also requires sinowealth-kb-tool to be
++        # installed; without it the run target is simply not created.
++        if skbt.found() and keyboard != 'royalkludge-rk84'
++            run_target(flash_target_name,
++                command : [skbt, 'write', '-d', keyboard, '--force', hex_smk.full_path()], # TODO: try to remove the need for --force
++                depends : hex_smk,
++            )
++        endif
+ 
+         message('target available: @0@, flash: @1@'.format(hex_smk_target_name, flash_target_name))
+     endforeach

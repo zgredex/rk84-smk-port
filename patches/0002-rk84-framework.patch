@@ -1,0 +1,625 @@
+diff --git a/src/platform/sh68f90a/flash.c b/src/platform/sh68f90a/flash.c
+index ac8b5fb..d58d840 100644
+--- a/src/platform/sh68f90a/flash.c
++++ b/src/platform/sh68f90a/flash.c
+@@ -19,7 +19,7 @@
+ 
+ static uint8_t flash_read(uint16_t addr)
+ {
+-    __code uint8_t *p = (__code uint8_t *)addr;
++    const __code uint8_t *p = (const __code uint8_t *)addr;
+     return *p;
+ }
+ 
+diff --git a/src/platform/sh68f90a/usb.c b/src/platform/sh68f90a/usb.c
+index 4244b76..5e63a93 100644
+--- a/src/platform/sh68f90a/usb.c
++++ b/src/platform/sh68f90a/usb.c
+@@ -11,6 +11,21 @@
+ #include <stdint.h>
+ #include <string.h>
+ 
++/* Endpoint descriptor sizes must fit the hardware buffers. */
++_Static_assert(USB_EP1_MPS <= EP1_BUF_SIZE,
++               "EP1 descriptor packet size exceeds hardware buffer");
++_Static_assert(USB_EP2_MPS <= EP2_BUF_SIZE,
++               "EP2 descriptor packet size exceeds hardware buffer");
++
++#ifdef NKRO_ENABLE
++_Static_assert(NKRO_REPORT_SIZE <= USB_EP2_MPS,
++               "NKRO report exceeds EP2 max packet size");
++#endif
++
++#if DEBUG == 1 && USB_EP2_MPS < (CONSOLE_REPORT_SIZE + 1)
++#    error "Debug console report exceeds EP2 max packet size"
++#endif
++
+ #ifndef USB_VID
+ #    define USB_VID 0xdead
+ #endif
+@@ -146,17 +161,18 @@ const uint8_t hid_report_desc_extra[] = {
+     HID_RI_USAGE(8, 0x06),                // Keyboard
+     HID_RI_COLLECTION(8, 0x01),           // Application
+         HID_RI_REPORT_ID(8, REPORT_ID_NKRO),
+-        // Modifiers (8 bits)
+-        HID_RI_USAGE_PAGE(8, 0x07),     // Keyboard/Keypad
+-        HID_RI_USAGE_MINIMUM(8, 0xe0),  // Keyboard Left Control
+-        HID_RI_USAGE_MAXIMUM(8, 0xe7),  // Keyboard Right Gui
++#ifdef RK84_STOCK_REPORTS
++        // NKRO (stock RK84 format: usages 0x04-0x70, 120 bits = 15 bytes)
++        HID_RI_USAGE_PAGE(8, 0x07),       // Keyboard/Keypad
++        HID_RI_USAGE_MINIMUM(8, 0x04),
++        HID_RI_USAGE_MAXIMUM(8, 0x70),
+         HID_RI_LOGICAL_MINIMUM(8, 0x00),
+         HID_RI_LOGICAL_MAXIMUM(8, 0x01),
+-        HID_RI_REPORT_SIZE(8, 0x01),
+-        HID_RI_REPORT_COUNT(8, 0x08),
++        HID_RI_REPORT_SIZE(8, 1),
++        HID_RI_REPORT_COUNT(8, 0x78),
+         HID_RI_INPUT(8, HID_IOF_DATA | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
+-
+-        // NKRO
++#else
++        // NKRO (upstream: usages 0x00..(bits*8-1))
+         HID_RI_USAGE_PAGE(8, 0x07),       // Keyboard/Keypad
+         HID_RI_USAGE_MINIMUM(8, 0x00),
+         HID_RI_USAGE_MAXIMUM(8, NKRO_REPORT_BITS * 8 - 1),
+@@ -165,6 +181,7 @@ const uint8_t hid_report_desc_extra[] = {
+         HID_RI_REPORT_SIZE(8, 1),
+         HID_RI_REPORT_COUNT(8, NKRO_REPORT_BITS * 8),
+         HID_RI_INPUT(8, HID_IOF_DATA | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
++#endif // RK84_STOCK_REPORTS
+     HID_RI_END_COLLECTION(0),
+ #endif // NKRO_ENABLE
+ 
+@@ -181,10 +198,10 @@ usb_desc_device_c usb_desc_device = {
+     .bMaxPacketSize0    = 8,
+     .idVendor           = USB_VID,
+     .idProduct          = USB_PID,
+-    .bcdDevice          = 0x0000,
++    .bcdDevice          = USB_BCD_DEVICE,
+     .iManufacturer      = USB_STRING_MANUFACTURER,
+     .iProduct           = USB_STRING_PRODUCT,
+-    .iSerialNumber      = USB_STRING_SERIAL_NUMBER,
++    .iSerialNumber      = USB_SERIAL_INDEX,
+     .bNumConfigurations = 1,
+ };
+ 
+@@ -215,7 +232,7 @@ usb_desc_endpoint_c usb_desc_endpoint_main = {
+     .bDescriptorType  = USB_DESC_ENDPOINT,
+     .bEndpointAddress = 1 | USB_DIR_IN,
+     .bmAttributes     = USB_XFER_INTERRUPT,
+-    .wMaxPacketSize   = 16, // 16 bytes
++    .wMaxPacketSize   = USB_EP1_MPS, // 8 (stock RK84) / 16 (default)
+     .bInterval        = 1,  // 1ms
+ };
+ 
+@@ -246,7 +263,7 @@ usb_desc_endpoint_c usb_desc_endpoint_extra = {
+     .bDescriptorType  = USB_DESC_ENDPOINT,
+     .bEndpointAddress = 2 | USB_DIR_IN,
+     .bmAttributes     = USB_XFER_INTERRUPT,
+-    .wMaxPacketSize   = 64, // 64 bytes
++    .wMaxPacketSize   = USB_EP2_MPS, // 16 (stock RK84) / 64 (default)
+     .bInterval        = 1,  // 1ms
+ };
+ 
+@@ -282,9 +299,9 @@ static usb_desc_langid_c usb_langid = {
+ };
+ 
+ usb_ascii_string_c usb_strings[] = {
+-    [USB_STRING_MANUFACTURER - 1]  = "contact@carlossless.io",
+-    [USB_STRING_PRODUCT - 1]       = "SMK Keyboard",
+-    [USB_STRING_SERIAL_NUMBER - 1] = "0001",
++    [USB_STRING_MANUFACTURER - 1]  = USB_STRING_MANUFACTURER_VALUE,
++    [USB_STRING_PRODUCT - 1]       = USB_STRING_PRODUCT_VALUE,
++    [USB_STRING_SERIAL_NUMBER - 1] = USB_STRING_SERIAL_VALUE,
+ };
+ 
+ usb_descriptor_set_c usb_descriptor_set = {
+@@ -402,14 +419,27 @@ void usb_send_nkro(__xdata report_nkro_t *report)
+ void usb_send_extra(__xdata report_extra_t *report)
+ {
+     uint8_t timeout = 0;
++    uint8_t len;
++
++    /* Stock: System (ID 1) = 2 bytes total (ID + 8-bit usage);
++     * Consumer (ID 2) = 3 bytes total (ID + 16-bit usage).
++     * Unknown report IDs are rejected, not treated as Consumer. */
++    if (report->report_id == REPORT_ID_SYSTEM) {
++        len = 2;
++    } else if (report->report_id == REPORT_ID_CONSUMER) {
++        len = 3;
++    } else {
++        return;
++    }
++
+     while (timeout < 255 && EP2CON & _IEP2RDY) {
+         delay_us(40);
+         timeout++;
+     }
+ 
+-    set_ep2_in_buffer(report->raw, EXTRA_REPORT_SIZE);
++    set_ep2_in_buffer(report->raw, len);
+ 
+-    SET_EP2_CNT(EXTRA_REPORT_SIZE);
++    SET_EP2_CNT(len);
+     SET_EP2_IN_RDY;
+ }
+ 
+diff --git a/src/platform/sh68f90a/usb.h b/src/platform/sh68f90a/usb.h
+index e5230aa..13f4160 100644
+--- a/src/platform/sh68f90a/usb.h
++++ b/src/platform/sh68f90a/usb.h
+@@ -4,6 +4,30 @@
+ #include "report.h"
+ #include <stdint.h>
+ 
++/* Board-configurable USB identity (meson cc_args; defaults = upstream
++ * SMK values so unrelated boards are unaffected). */
++#ifndef USB_BCD_DEVICE
++#define USB_BCD_DEVICE 0x0000
++#endif
++#ifndef USB_EP1_MPS
++#define USB_EP1_MPS 16
++#endif
++#ifndef USB_EP2_MPS
++#define USB_EP2_MPS 64
++#endif
++#ifndef USB_SERIAL_INDEX
++#define USB_SERIAL_INDEX USB_STRING_SERIAL_NUMBER
++#endif
++#ifndef USB_STRING_MANUFACTURER_VALUE
++#define USB_STRING_MANUFACTURER_VALUE "contact@carlossless.io"
++#endif
++#ifndef USB_STRING_PRODUCT_VALUE
++#define USB_STRING_PRODUCT_VALUE "SMK Keyboard"
++#endif
++#ifndef USB_STRING_SERIAL_VALUE
++#define USB_STRING_SERIAL_VALUE "0001"
++#endif
++
+ enum {
+     USB_PROTOCOL_BOOT   = 0,
+     USB_PROTOCOL_REPORT = 1,
+@@ -18,5 +42,3 @@ uint8_t usb_device_state_get_protocol();
+ #if DEBUG == 1
+ bool usb_is_configured();
+ #endif // DEBUG
+-
+-void usb_interrupt_handler() __interrupt(_INT_USB);
+diff --git a/src/smk/debug.h b/src/smk/debug.h
+index 351abba..9562716 100644
+--- a/src/smk/debug.h
++++ b/src/smk/debug.h
+@@ -2,7 +2,11 @@
+ 
+ #include <stdio.h>
+ 
++#if DEBUG == 1
+ #define dprintf(...)                    \
+     do {                                \
+         if (DEBUG) printf(__VA_ARGS__); \
+     } while (0)
++#else
++#define dprintf(...) do { } while (0)
++#endif
+diff --git a/src/smk/matrix.c b/src/smk/matrix.c
+index b1d81c1..179a160 100644
+--- a/src/smk/matrix.c
++++ b/src/smk/matrix.c
+@@ -23,6 +23,35 @@ volatile bool                 matrix_updated;
+ 
+ uint8_t action_layer;
+ 
++/* Resolved keycode per physical position: captured on press and used
++ * on release so a layer change while a key is held cannot re-resolve
++ * the release to a different keycode (or KC_NO) and leave a stuck key.
++ * Held in xdata to spare internal RAM. */
++static __xdata uint16_t active_keycode[MATRIX_ROWS][MATRIX_COLS];
++
++static uint16_t resolve_keycode(uint8_t row, uint8_t col)
++{
++    uint16_t qcode = keymaps[0][row][col];
++
++    /*
++     * A base-layer momentary key must remain momentary even while
++     * another layer is active.
++     */
++    if (IS_QK_MOMENTARY(qcode)) {
++        return qcode;
++    }
++
++    if (action_layer) {
++        uint16_t layer_code = keymaps[action_layer][row][col];
++
++        if (layer_code != KC_TRANSPARENT) {
++            qcode = layer_code;
++        }
++    }
++
++    return qcode;
++}
++
+ void matrix_init()
+ {
+     current_step   = 0;
+@@ -33,6 +62,12 @@ void matrix_init()
+         matrix[i]          = 0;
+         matrix_previous[i] = 0;
+     }
++
++    for (uint8_t row = 0; row < MATRIX_ROWS; row++) {
++        for (uint8_t col = 0; col < MATRIX_COLS; col++) {
++            active_keycode[row][col] = KC_NO;
++        }
++    }
+ }
+ 
+ matrix_col_t matrix_get_col(uint8_t col)
+@@ -47,17 +82,30 @@ matrix_col_t matrix_can_read()
+ 
+ void process_key_state(uint8_t row, uint8_t col, bool pressed)
+ {
+-    uint16_t qcode = keymaps[0][row][col];
++    uint16_t qcode;
++
++    if (pressed) {
++        qcode = resolve_keycode(row, col);
++        active_keycode[row][col] = qcode;
++    } else {
++        qcode = active_keycode[row][col];
++        active_keycode[row][col] = KC_NO;
++
++        if (qcode == KC_NO) {
++            return;
++        }
++    }
+ 
+     // FIXME: this debug statement causes a delay which has a sideffect of fixing
+     // a sticky-key problem for the last row of keys (report is unsent on key-up)
+-    dprintf("KEY: 0x%04x %s\r\n", qcode, pressed ? "UP" : "DOWN");
++    dprintf("KEY: 0x%04x %s\r\n", qcode, pressed ? "DOWN" : "UP");
+ 
+     if (IS_QK_MOMENTARY(qcode)) {
+         if (pressed) {
+             action_layer = QK_MOMENTARY_GET_LAYER(qcode);
+         } else {
+-            clear_keys();
++            /* Do not clear held keys here: layer keys remain held
++             * until their physical release (sticky-key fix). */
+             action_layer = 0;
+         }
+ 
+@@ -65,14 +113,6 @@ void process_key_state(uint8_t row, uint8_t col, bool pressed)
+         return;
+     }
+ 
+-    if (action_layer) {
+-        uint16_t acode = keymaps[action_layer][row][col];
+-
+-        if (acode != KC_TRANSPARENT) {
+-            qcode = acode;
+-        }
+-    }
+-
+     if (!kb_process_record(qcode, pressed)) {
+         return;
+     }
+diff --git a/src/smk/report.c b/src/smk/report.c
+index 1e0366e..b154d99 100644
+--- a/src/smk/report.c
++++ b/src/smk/report.c
+@@ -26,9 +26,25 @@ void send_nkro_report();
+ 
+ /** \brief Send keyboard report
+  *
++ * Upstream SMK: the interface-0 protocol state selects one of the two
++ * report representations (boot 6KRO or NKRO).
++ *
++ * RK84 (RK84_STOCK_REPORTS): the factory sends BOTH reports — EP1
++ * boot 6KRO + EP2 NKRO ID 6 — simultaneously, and modifiers live only
++ * on EP1. This dual-send behavior is feature-gated behind
++ * RK84_DUAL_REPORTS until host behavior (no duplicate events) has been
++ * validated on Linux/macOS/Windows.
+  */
+ void send_keyboard_report()
+ {
++#ifdef RK84_STOCK_REPORTS
++    send_6kro_report();
++#ifdef NKRO_ENABLE
++#ifdef RK84_DUAL_REPORTS
++    send_nkro_report();
++#endif
++#endif
++#else
+ #ifdef NKRO_ENABLE
+     if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
+         send_nkro_report();
+@@ -38,6 +54,7 @@ void send_keyboard_report()
+ #else
+     send_6kro_report();
+ #endif
++#endif
+ }
+ 
+ void send_6kro_report()
+@@ -56,8 +73,12 @@ void send_6kro_report()
+ void send_nkro_report()
+ {
+     nkro_report.report_id = REPORT_ID_NKRO; // TODO: set this more permanently
++#ifdef RK84_STOCK_REPORTS
++    /* Stock report ID 6 has NO modifier byte — modifiers stay on EP1. */
++#else
+     nkro_report.mods      = real_mods;
+     nkro_report.mods |= weak_mods;
++#endif
+ 
+     /* Only send the report if there are changes to propagate to the host. */
+     if (memcmp(&nkro_report, &last_nkro_report, sizeof(report_nkro_t)) != 0) {
+@@ -67,6 +88,14 @@ void send_nkro_report()
+ }
+ #endif
+ 
++#ifdef RK84_STOCK_REPORTS
++/** \brief RK84 NKRO usage range check (usages 0x04..0x70) */
++static bool rk84_nkro_usage_valid(uint8_t code)
++{
++    return (code >= NKRO_FIRST_USAGE && code <= NKRO_LAST_USAGE);
++}
++#endif
++
+ /** \brief has_anykey
+  *
+  */
+@@ -77,10 +106,16 @@ uint8_t has_anykey(report_keyboard_t *keyboard_report)
+     uint8_t  lp  = sizeof(keyboard_report->keys);
+ 
+ #ifdef NKRO_ENABLE
++#ifdef RK84_STOCK_REPORTS
++    /* Both report states are maintained simultaneously. */
++    p  = nkro_report.bits;
++    lp = sizeof(nkro_report.bits);
++#else
+     if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
+         p  = nkro_report.bits;
+         lp = sizeof(nkro_report.bits);
+     }
++#endif
+ #endif
+ 
+     while (lp--) {
+@@ -94,19 +129,39 @@ uint8_t has_anykey(report_keyboard_t *keyboard_report)
+ 
+ /** \brief get_first_key
+  *
+- * FIXME: Needs doc
++ * Returns the first pressed key's HID usage. Bounds-safe for the NKRO
++ * bitmap: returns KC_NO when no key is set instead of reading one past
++ * the bitmap.
+  */
+ uint8_t get_first_key(report_keyboard_t *keyboard_report)
+ {
+ #ifdef NKRO_ENABLE
++#ifdef RK84_STOCK_REPORTS
++    {
++        uint8_t i = 0;
++        (void)keyboard_report;
++        for (; i < NKRO_REPORT_BITS; i++) {
++            if (nkro_report.bits[i]) {
++                return (uint8_t)(NKRO_FIRST_USAGE + (i << 3) +
++                                 biton(nkro_report.bits[i]));
++            }
++        }
++        return KC_NO;
++    }
++#else
+     if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
+         uint8_t i = 0;
+         for (; i < NKRO_REPORT_BITS && !nkro_report.bits[i]; i++)
+             ;
++        if (i >= NKRO_REPORT_BITS) {
++            return KC_NO;
++        }
+         return i << 3 | biton(nkro_report.bits[i]);
+     }
+ #endif
++#else
+     return keyboard_report->keys[0];
++#endif
+ }
+ 
+ /** \brief Checks if a key is pressed in the report
+@@ -121,6 +176,12 @@ bool is_key_pressed(report_keyboard_t *keyboard_report, uint8_t key)
+     }
+ 
+ #ifdef NKRO_ENABLE
++#ifdef RK84_STOCK_REPORTS
++    if (rk84_nkro_usage_valid(key)) {
++        uint8_t index = (uint8_t)(key - NKRO_FIRST_USAGE);
++        return (nkro_report.bits[index >> 3] & (1 << (index & 7))) != 0;
++    }
++#else
+     if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
+         if ((key >> 3) < NKRO_REPORT_BITS) {
+             return nkro_report.bits[key >> 3] & 1 << (key & 7);
+@@ -128,6 +189,7 @@ bool is_key_pressed(report_keyboard_t *keyboard_report, uint8_t key)
+             return false;
+         }
+     }
++#endif
+ #endif
+ 
+     for (int i = 0; i < KEYBOARD_REPORT_KEYS; i++) {
+@@ -183,8 +245,20 @@ void del_key_byte(report_keyboard_t *keyboard_report, uint8_t code)
+  */
+ void add_key_bit(report_nkro_t *nkro_report, uint8_t code)
+ {
+-    if ((code >> 3) < NKRO_REPORT_BITS) {
+-        nkro_report->bits[code >> 3] |= 1 << (code & 7);
++#ifdef RK84_STOCK_REPORTS
++    uint8_t index;
++
++    if (!rk84_nkro_usage_valid(code)) {
++        return;
++    }
++
++    index = (uint8_t)(code - NKRO_FIRST_USAGE);
++#else
++    uint8_t index = code;
++#endif
++
++    if ((index >> 3) < NKRO_REPORT_BITS) {
++        nkro_report->bits[index >> 3] |= 1 << (index & 7);
+     } else {
+         dprintf("add_key_bit: can't add: %02X\n", code);
+     }
+@@ -196,8 +270,20 @@ void add_key_bit(report_nkro_t *nkro_report, uint8_t code)
+  */
+ void del_key_bit(report_nkro_t *nkro_report, uint8_t code)
+ {
+-    if ((code >> 3) < NKRO_REPORT_BITS) {
+-        nkro_report->bits[code >> 3] &= ~(1 << (code & 7));
++#ifdef RK84_STOCK_REPORTS
++    uint8_t index;
++
++    if (!rk84_nkro_usage_valid(code)) {
++        return;
++    }
++
++    index = (uint8_t)(code - NKRO_FIRST_USAGE);
++#else
++    uint8_t index = code;
++#endif
++
++    if ((index >> 3) < NKRO_REPORT_BITS) {
++        nkro_report->bits[index >> 3] &= ~(1 << (index & 7));
+     } else {
+         dprintf("del_key_bit: can't del: %02X\n", code);
+     }
+@@ -209,6 +295,13 @@ void del_key_bit(report_nkro_t *nkro_report, uint8_t code)
+  */
+ void add_key_to_report(report_keyboard_t *keyboard_report, uint8_t key)
+ {
++#ifdef RK84_STOCK_REPORTS
++    add_key_byte(keyboard_report, key);
++
++#ifdef NKRO_ENABLE
++    add_key_bit(&nkro_report, key);
++#endif
++#else
+ #ifdef NKRO_ENABLE
+     if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
+         add_key_bit(&nkro_report, key);
+@@ -216,6 +309,7 @@ void add_key_to_report(report_keyboard_t *keyboard_report, uint8_t key)
+     }
+ #endif
+     add_key_byte(keyboard_report, key);
++#endif
+ }
+ 
+ /** \brief del key from report
+@@ -223,6 +317,13 @@ void add_key_to_report(report_keyboard_t *keyboard_report, uint8_t key)
+  */
+ void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key)
+ {
++#ifdef RK84_STOCK_REPORTS
++    del_key_byte(keyboard_report, key);
++
++#ifdef NKRO_ENABLE
++    del_key_bit(&nkro_report, key);
++#endif
++#else
+ #ifdef NKRO_ENABLE
+     if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
+         del_key_bit(&nkro_report, key);
+@@ -230,6 +331,7 @@ void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key)
+     }
+ #endif
+     del_key_byte(keyboard_report, key);
++#endif
+ }
+ 
+ /** \brief clear key from report
+@@ -237,6 +339,13 @@ void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key)
+  */
+ void clear_keys_from_report(report_keyboard_t *keyboard_report)
+ {
++#ifdef RK84_STOCK_REPORTS
++    memset(keyboard_report->keys, 0, sizeof(keyboard_report->keys));
++
++#ifdef NKRO_ENABLE
++    memset(nkro_report.bits, 0, sizeof(nkro_report.bits));
++#endif
++#else
+ #ifdef NKRO_ENABLE
+     if (usb_device_state_get_protocol() == USB_PROTOCOL_REPORT && keymap_config.nkro) {
+         memset(nkro_report.bits, 0, sizeof(nkro_report.bits));
+@@ -244,6 +353,7 @@ void clear_keys_from_report(report_keyboard_t *keyboard_report)
+     }
+ #endif
+     memset(keyboard_report->keys, 0, sizeof(keyboard_report->keys));
++#endif
+ }
+ 
+ /** \brief Get mods
+diff --git a/src/smk/report.h b/src/smk/report.h
+index f1791d9..d5d6bd6 100644
+--- a/src/smk/report.h
++++ b/src/smk/report.h
+@@ -7,8 +7,38 @@
+ #define KEYBOARD_REPORT_SIZE 8
+ #define KEYBOARD_REPORT_KEYS 6
+ 
+-#define NKRO_REPORT_BITS 20 // limited by wireless dongle hid descriptor
+-#define NKRO_REPORT_SIZE 2 + NKRO_REPORT_BITS
++/* ------------------------------------------------------------------ */
++/* NKRO report format.                                                 */
++/*                                                                    */
++/* Upstream SMK uses a 22-byte format (ID + modifiers + 20 bitmap     */
++/* bytes) shared by every board.                                      */
++/*                                                                    */
++/* The RK84 target (RK84_STOCK_REPORTS) uses the factory's 16-byte    */
++/* format: report ID 6 + 15 bitmap bytes covering usages 0x04..0x70   */
++/* (120 bits; the last 11 bits are padding). NO modifier byte in this */
++/* report - modifiers live on the EP1 boot report.                    */
++/* ------------------------------------------------------------------ */
++#ifdef RK84_STOCK_REPORTS
++
++#    define NKRO_FIRST_USAGE 0x04
++#    define NKRO_LAST_USAGE  0x70
++#    define NKRO_REPORT_BITS 15
++#    define NKRO_REPORT_SIZE 16
++
++typedef union {
++    uint8_t raw[NKRO_REPORT_SIZE];
++    struct {
++        uint8_t report_id;
++        uint8_t bits[NKRO_REPORT_BITS];
++    };
++} report_nkro_t;
++
++#else
++
++#    define NKRO_REPORT_BITS 20 // limited by wireless dongle hid descriptor
++#    define NKRO_REPORT_SIZE 2 + NKRO_REPORT_BITS
++
++#endif /* RK84_STOCK_REPORTS */
+ 
+ #define EXTRA_REPORT_SIZE 3
+ 
+@@ -46,15 +76,6 @@ typedef union {
+     };
+ } report_keyboard_t;
+ 
+-typedef union {
+-    uint8_t raw[NKRO_REPORT_SIZE];
+-    struct {
+-        uint8_t report_id;
+-        uint8_t mods;
+-        uint8_t bits[NKRO_REPORT_BITS];
+-    };
+-} report_nkro_t;
+-
+ typedef union {
+     uint8_t raw[EXTRA_REPORT_SIZE];
+     struct {

@@ -4,8 +4,8 @@
 #include <stdint.h>
 
 // =====================================================================
-// RK84 layout — derived from live firmware default table @the default usage table
-// (see docs/RK84-DEFINITIVE-LAYOUT.md)
+// RK84 layout — 84-key default (matrix pins and layout derived from
+// the factory firmware's default keymap).
 //
 // Matrix: 16 cols (c0=P5.0 c1=P5.1 c2=P5.2 c3=P3.5 c4=P3.4 c5=P3.3
 // c6=P3.2 c7=P3.1 c8=P3.0 c9=P2.5 c10=P2.4 c11=P2.3 c12=P2.2 c13=P2.1
@@ -13,8 +13,11 @@
 // r5=P5.4).
 //
 // 84 populated keys. Empty positions = KC_NO.
+//
+// Fn = c9r5 (hard-coded); RCtrl = c10r5. Fn layer is layer [1]; all
+// unremapped cells are KC_TRANSPARENT so held keys keep working.
 // Modifiers: c0r4 LSHIFT, c0r5 LCTRL, c1r5 LGUI, c2r5 LALT,
-// c8r5 RALT, c10r5 FN (momentary), c11r4 RSHIFT
+// c8r5 RALT, c10r5 RCTRL, c11r4 RSHIFT
 // =====================================================================
 
 // clang-format off
@@ -50,28 +53,50 @@ const uint16_t keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
  KC_LEFT, KC_DOWN, KC_RIGHT },
  },
  [1] = {
- // Fn layer (derived from the stock Fn map):
- // F1-F12 = media/apps (Windows-mode map), Print=INS, Pause=SCRLK
- // Up/Down = RGB brightness (stock keyboard-light controls)
- { KC_NO, KC_MY_COMPUTER, KC_WWW_HOME, KC_MAIL, KC_CALCULATOR,
- KC_MEDIA_SELECT, KC_MEDIA_STOP, KC_MEDIA_PREV_TRACK,
- KC_MEDIA_PLAY_PAUSE, KC_MEDIA_NEXT_TRACK, KC_AUDIO_MUTE,
- KC_AUDIO_VOL_DOWN, KC_AUDIO_VOL_UP, KC_INSERT, KC_SCROLL_LOCK,
- KC_NO },
- { KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO,
- KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO },
- { KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO,
- KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO },
- { KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO,
- KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO },
- { KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO,
- KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO },
- // row 5: Up/Down -> RGB_BRI_UP/DN (stock the factory firmwareB8)
- { KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO,
- KC_NO, KC_TRANSPARENT, KC_NO, KC_NO, KC_NO, KC_NO, KC_NO,
- KC_NO },
+     // Fn layer: media/apps on F1-F12 (stock Windows-mode map),
+     // Print=INS, Pause=SCRLK, Up/Down = RGB brightness.
+     // KC_TRANSPARENT everywhere else: unremapped keys keep working
+     // while Fn is held, and releases never resolve to KC_NO.
+     { KC_TRANSPARENT, KC_MY_COMPUTER, KC_WWW_HOME, KC_MAIL,
+       KC_CALCULATOR, KC_MEDIA_SELECT, KC_MEDIA_STOP,
+       KC_MEDIA_PREV_TRACK, KC_MEDIA_PLAY_PAUSE,
+       KC_MEDIA_NEXT_TRACK, KC_AUDIO_MUTE, KC_AUDIO_VOL_DOWN,
+       KC_AUDIO_VOL_UP, KC_INSERT, KC_SCROLL_LOCK,
+       KC_TRANSPARENT },
+     { KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT },
+     { KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT },
+     { KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT },
+     // row 4: Up (c14) -> RGB_BRI_UP
+     { KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, RGB_BRI_UP,
+       KC_TRANSPARENT },
+     // row 5: Down (c14) -> RGB_BRI_DN
+     { KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, KC_TRANSPARENT,
+       KC_TRANSPARENT, KC_TRANSPARENT, RGB_BRI_DN,
+       KC_TRANSPARENT },
  },
-};
+ };
 // clang-format on
 
 bool layout_process_record(uint16_t keycode, bool key_pressed)

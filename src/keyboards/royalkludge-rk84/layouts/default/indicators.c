@@ -34,18 +34,36 @@ static void rgb_write_duty2(uint8_t col, uint16_t duty);
 static uint16_t rgb_duty(uint8_t source);
 
 // ---------------------------------------------------------------------
-// Start
+// Start — called once from main() before the main loop
 // ---------------------------------------------------------------------
 void indicators_start(void)
 {
- rgb_phase = 0;
- rgb_brightness = 5;
+    rgb_phase      = 0;
+    rgb_brightness = 1;
 
- /* Component 0 = full: identify physical color on first flash. */
- rgb_fill_static(255, 0, 0);
+#if RK84_RGB_ENABLE
+    /*
+     * Safe RGB bring-up: everything off except ONE logical LED
+     * (row 0, column 0, component 0) at low intensity, so the first
+     * flash validates component order / sink polarity / PWM mapping
+     * before any full-grid lighting. Duty = 64 * 1 * 2 = 128
+     * (5% of the 2560-count period).
+     */
+    rgb_fill_static(0, 0, 0);
+    rgb_plane[0][0] = 64;
+#else
+    /* Matrix-only image: no sinks, no PWM outputs. */
+    rgb_fill_static(0, 0, 0);
+#endif
 
- rgb_blank();
- PWM00CON = 0xC2;
+    rgb_blank();
+
+    /*
+     * Start the PWM scheduler only now: the RGB framebuffer is fully
+     * initialized, so the first interrupt never reads garbage state.
+     */
+    PWM00CON = 0xC2;
+    IEN1 |= _EPWM0;
 }
 
 // ---------------------------------------------------------------------
@@ -61,39 +79,40 @@ void indicators_pre_update(void)
 }
 
 bool indicators_update_step(
- keyboard_state_t *keyboard,
- uint8_t matrix_col
+    keyboard_state_t *keyboard,
+    uint8_t matrix_col
 )
 {
- uint8_t row;
- uint8_t component;
- uint8_t base;
+    (void)keyboard;
+    (void)matrix_col;
 
- (void)keyboard;
- (void)matrix_col;
+    if (rgb_phase == 0) {
+        PWM00CON = 0xC2;
+    } else {
+#if RK84_RGB_ENABLE
+        uint8_t row       = (uint8_t)((rgb_phase - 1) / 3);
+        uint8_t component = (uint8_t)((rgb_phase - 1) % 3);
+        uint8_t base      = (uint8_t)(row * RGB_COLS);
 
- if (rgb_phase == 0) {
- PWM00CON = 0xC2;
- } else {
- row = (uint8_t)((rgb_phase - 1) / 3);
- component = (uint8_t)((rgb_phase - 1) % 3);
- base = (uint8_t)(row * RGB_COLS);
+        for (uint8_t col = 0; col < RGB_COLS; col++) {
+            uint8_t source = rgb_plane[component][base + col];
+            rgb_write_duty2(col, rgb_duty(source));
+        }
 
- for (uint8_t col = 0; col < RGB_COLS; col++) {
- uint8_t source = rgb_plane[component][base + col];
- rgb_write_duty2(col, rgb_duty(source));
- }
+        rgb_pwm_enable();
+        rgb_sink_enable(rgb_phase);
+#else
+        /* Matrix-only image: no RGB output. */
+        PWM00CON = 0xC2;
+#endif
+    }
 
- rgb_pwm_enable();
- rgb_sink_enable(rgb_phase);
- }
+    rgb_phase++;
+    if (rgb_phase >= RGB_PHASES) {
+        rgb_phase = 0;
+    }
 
- rgb_phase++;
- if (rgb_phase >= RGB_PHASES) {
- rgb_phase = 0;
- }
-
- return false;
+    return false;
 }
 
 void indicators_post_update(void)

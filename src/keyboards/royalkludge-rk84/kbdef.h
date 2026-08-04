@@ -89,6 +89,16 @@
 // Custom keycodes (SMK SAFE_RANGE base)
 // ---------------------------------------------------------------------
 enum custom_keycodes {
- RGB_BRI_UP = SAFE_RANGE, // keyboard RGB brightness up (Fn+Up, stock)
- RGB_BRI_DN, // keyboard RGB brightness down (Fn+Down, stock)
+    RGB_BRI_UP = SAFE_RANGE, // keyboard RGB brightness up (Fn+Up, stock)
+    RGB_BRI_DN,              // keyboard RGB brightness down (Fn+Down, stock)
 };
+
+// ---------------------------------------------------------------------
+// Build-mode gates (meson board options; defaults safe for recovery)
+// ---------------------------------------------------------------------
+#ifndef RK84_RGB_ENABLE
+#define RK84_RGB_ENABLE 0
+#endif
+#ifndef RK84_RECOVERY_ONLY
+#define RK84_RECOVERY_ONLY 0
+#endif

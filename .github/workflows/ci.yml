@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned SMK
+        run: |
+          git clone https://github.com/carlossless/smk.git smk
+          cd smk
+          git checkout 08f4d0253389551b9ae9aad2464e2d7cacaf662e
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sdcc meson ninja-build python3
+
+      - name: Apply RK84 patches
+        run: |
+          SMK_DIR=$PWD/smk bash $PWD/tools/apply-to-smk.sh
+
+      - name: Build RK84
+        run: |
+          cd smk
+          meson setup build-rk84 --buildtype=release
+          ninja -C build-rk84 royalkludge-rk84_default_smk.hex
+
+      - name: Check HEX bounds (first-stage cap 0xBC00)
+        run: |
+          python3 $PWD/tools/check-hex-bounds.py smk/build-rk84/royalkludge-rk84_default_smk.hex --limit 0xBC00
+
+      - name: Check HEX bounds (hard cap 0xEC00)
+        run: |
+          python3 $PWD/tools/check-hex-bounds.py smk/build-rk84/royalkludge-rk84_default_smk.hex --limit 0xEC00
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: rk84-firmware
+          path: smk/build-rk84/royalkludge-rk84_default_smk.hex

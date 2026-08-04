@@ -29,68 +29,93 @@ void recovery_isp_check(void);
 
 void user_init(void)
 {
- recovery_isp_check();
+    recovery_isp_check();
 
- user_gpio_init();
- user_pwm_init();
+    user_gpio_init();
 
- /*
- * PWM00CON is 0xC2: scheduler active, RGB output select disabled.
- * RGB render phases will enable outputs per-phase.
- */
- IEN1 |= _EPWM0;
+#if RK84_RECOVERY_ONLY
+    /*
+     * Recovery-only image: no PWM, no matrix scheduler. USB EP0,
+     * Feature report ID 5 and the Esc+Space chord are all that exist.
+     */
+#else
+    user_pwm_init();
+
+    /*
+     * PWM is NOT started here. The scheduler (PWM00CON = 0xC2 +
+     * IEN1 |= EPWM0) is started from indicators_start() after the RGB
+     * framebuffer is initialized, so the first interrupt never runs
+     * against uninitialized RGB state.
+     */
+#endif
 }
 
 // ---------------------------------------------------------------------
-// Recovery chord ()
+// Recovery chord — early application escape to ROM ISP
 // ---------------------------------------------------------------------
+
+/* Configure every shared matrix/PWM column as a released output and
+ * all six matrix rows as inputs with pull-ups, so the Esc+Space sample
+ * is deterministic after cold reset regardless of prior GPIO state. */
+static void recovery_matrix_prepare(void)
+{
+    /* Every shared matrix/PWM column as output. */
+    P1CR |= 0x3F;
+    P2CR |= 0x3F;
+    P3CR |= 0x3F;
+    P5CR |= 0x07;
+
+    /* Every column released HIGH. */
+    P1 |= 0x3F;
+    P2 |= 0x3F;
+    P3 |= 0x3F;
+    P5 |= 0x07;
+
+    /* All six matrix rows as inputs with pull-ups. */
+    P7CR &= (uint8_t)~0x0F;
+    P5CR &= (uint8_t)~0x18;
+
+    P7PCR |= 0x0F;
+    P5PCR |= 0x18;
+}
+
 static bool recovery_chord_pressed_once(void)
 {
- bool esc;
- bool space;
+    bool esc;
+    bool space;
 
- /* Rows as inputs with pull-ups. */
- P7CR &= (uint8_t)~RECOVERY_ROW_ESC_BIT;
- P5CR &= (uint8_t)~RECOVERY_ROW_SPACE_BIT;
- P7PCR |= RECOVERY_ROW_ESC_BIT;
- P5PCR |= RECOVERY_ROW_SPACE_BIT;
+    recovery_matrix_prepare();
 
- /* Two columns as outputs, initially released HIGH. */
- P5CR |= RECOVERY_COL_ESC_BIT;
- P3CR |= RECOVERY_COL_SPACE_BIT;
- RECOVERY_COL_ESC = 1;
- RECOVERY_COL_SPACE = 1;
+    /* Esc. */
+    RECOVERY_COL_ESC = 0;
+    delay_us(10);
+    esc = !RECOVERY_ROW_ESC;
+    RECOVERY_COL_ESC = 1;
 
- /* Esc. */
- RECOVERY_COL_ESC = 0;
- delay_us(10);
- esc = !RECOVERY_ROW_ESC;
- RECOVERY_COL_ESC = 1;
+    /* Space. */
+    RECOVERY_COL_SPACE = 0;
+    delay_us(10);
+    space = !RECOVERY_ROW_SPACE;
+    RECOVERY_COL_SPACE = 1;
 
- /* Space. */
- RECOVERY_COL_SPACE = 0;
- delay_us(10);
- space = !RECOVERY_ROW_SPACE;
- RECOVERY_COL_SPACE = 1;
-
- return esc && space;
+    return esc && space;
 }
 
 void recovery_isp_check(void)
 {
- /*
- * Require two positive samples 30 ms apart so a power-up transient
- * cannot enter ISP accidentally.
- */
- if (!recovery_chord_pressed_once()) {
- return;
- }
+    /*
+     * Require two positive samples 30 ms apart so a power-up transient
+     * cannot enter ISP accidentally.
+     */
+    if (!recovery_chord_pressed_once()) {
+        return;
+    }
 
- delay_ms(30);
+    delay_ms(30);
 
- if (recovery_chord_pressed_once()) {
- isp_jump();
- }
+    if (recovery_chord_pressed_once()) {
+        isp_jump();
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -143,27 +168,28 @@ static void user_gpio_init(void)
 }
 
 // ---------------------------------------------------------------------
-// PWM (stock: all groups 0x0A00, DUTY1/2 zero, blank, 0xC2 start)
+// PWM (periods + duty cleared; scheduler started by indicators_start)
 // ---------------------------------------------------------------------
 static void user_pwm_init(void)
 {
- PWM0PERDH = 0x0A;
- PWM0PERDL = 0x00;
+    PWM0PERDH = 0x0A;
+    PWM0PERDL = 0x00;
 
- PWM1PERDH = 0x0A;
- PWM1PERDL = 0x00;
+    PWM1PERDH = 0x0A;
+    PWM1PERDL = 0x00;
 
- PWM2PERDH = 0x0A;
- PWM2PERDL = 0x00;
+    PWM2PERDH = 0x0A;
+    PWM2PERDL = 0x00;
 
- PWM4PERDH = 0x0A;
- PWM4PERDL = 0x00;
+    PWM4PERDH = 0x0A;
+    PWM4PERDL = 0x00;
 
- rgb_clear_duty1();
- rgb_clear_duty2();
- rgb_blank();
+    rgb_clear_duty1();
+    rgb_clear_duty2();
+    rgb_blank();
 
- PWM00CON = 0xC2;
+    /* Scheduler off until indicators_start() turns it on. */
+    PWM00CON = 0x02;
 }
 
 // ---------------------------------------------------------------------
