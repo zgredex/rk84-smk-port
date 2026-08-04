@@ -59,6 +59,50 @@ done
 
 Requires SDCC >= 4.3.0 and the meson/ninja toolchain.
 
+## Offline verification (no hardware needed)
+
+```sh
+# 1. Test suite (zero dependencies, stdlib unittest):
+python3 -m unittest discover -s tests -t .
+
+# 2. Per-image checks:
+python3 tools/check-hex-bounds.py      build/..._smk.hex           # bounds+checksum
+python3 tools/check-recovery-no-pwm.py build/..._smk.ihx           # recovery: no PWM enable
+python3 tools/check-usb-descriptors.py build/..._smk.ihx           # stock USB identity
+
+# 3. Build manifest (ties artifact to source state):
+python3 tools/make-manifest.py build/..._smk.hex build/..._smk.ihx --build-dir build/
+```
+
+The test suite covers:
+
+- **HEX parsers**: truncated records, bad checksums, missing/malformed
+  EOF, data after EOF, type 0x02/0x04 addressing, limits at
+  0xBC00/0xEC00/0xEFFC/0xF000
+- **PWM invariant**: no EPWM0 enable / PWM00CON 0xC2/0xCA in recovery
+  images, including above-64 KiB addressing
+- **USB descriptors**: VID:PID, bcdDevice, serial index, EP sizes,
+  Feature ID 5, NKRO usage range, System/Consumer sizes
+- **Report model**: 6KRO, modifiers, rollover, NKRO first/last usage,
+  usage>0x70 rejection, System 2B, Consumer 3B, golden fixtures
+- **Matrix/layer model**: sticky-key sequences (A/Fn/A, Fn/F8/Fn/F8,
+  same-frame Fn+F8, unstable column), Fn never in report, recovery
+  ignores matrix
+- **RGB scheduler**: framebuffer bounds, channel/sink range, duty <
+  period, one column per interrupt, recovery zero-writes
+- **Reproducibility**: two clean builds byte-identical, manifest
+  consistency
+
+## Bench toolkit
+
+```sh
+# Record a full bench session (USB before/after, HID, logs):
+./tools/bench-collect.sh session1 --flash build/..._smk.hex --sinowisp ./rk68-sinowisp-macos-ep0
+
+# Restore stock — REFUSES unless backup MD5 == 4ca60eb0...:
+./tools/restore-stock.sh
+```
+
 ## Hardware
 
 - MCU: Sinowealth SH68F90A (8051 core), 24 MHz

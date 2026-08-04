@@ -6,6 +6,21 @@ on:
   pull_request:
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3
+
+      - name: Run offline test suite
+        run: |
+          python3 -m unittest discover -s tests -t . -v
+
   build:
     runs-on: ubuntu-latest
     strategy:
@@ -60,6 +75,20 @@ jobs:
           python3 $PWD/tools/check-hex-bounds.py \
             smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex \
             --limit 0xEC00
+
+      - name: Verify USB descriptors
+        run: |
+          python3 $PWD/tools/check-usb-descriptors.py \
+            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.ihx
+
+      - name: Build manifest
+        run: |
+          python3 $PWD/tools/make-manifest.py \
+            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex \
+            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.ihx \
+            --build-dir smk/${{ matrix.dir }} \
+            --out smk/${{ matrix.dir }}/MANIFEST.txt
+          cat smk/${{ matrix.dir }}/MANIFEST.txt
 
       - name: Recovery invariant (${{ matrix.name }})
         if: matrix.name == 'rk84-recovery'
