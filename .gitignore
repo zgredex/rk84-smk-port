@@ -1,0 +1,21 @@
+# build artifacts
+*.hex
+*.ihx
+*.rel
+*.lst
+*.map
+build/
+build-*/
+
+# meson
+meson-private/
+.meson-logs/
+meson-info/
+
+# macOS
+.DS_Store
+
+# editor
+*.swp
+.idea/
+.vscode/
