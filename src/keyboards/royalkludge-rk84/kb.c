@@ -14,8 +14,8 @@
 // omitted (no-op if the keycode is ever used).
 // =====================================================================
 
-extern void indicators_brightness_up();
-extern void indicators_brightness_down();
+extern void indicators_brightness_up(void);
+extern void indicators_brightness_down(void);
 
 bool kb_process_record(uint16_t keycode, bool key_pressed)
 {

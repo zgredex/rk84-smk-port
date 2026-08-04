@@ -102,8 +102,8 @@ uint8_t user_matrix_scan_col(uint8_t col)
  first = rows_read_levels();
 
  /*
- * Stock DelayUnits(3) ~= 4.5 us. Round upward.
- */
+  * DelayUnits(3) ~= 4.5 us. Round upward.
+  */
  delay_us(5);
 
  second = rows_read_levels();

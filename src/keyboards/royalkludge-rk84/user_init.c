@@ -7,15 +7,16 @@
 #include <stdbool.h>
 
 // =====================================================================
-// RK84 user_init — recovery chord + full stock GPIO init + PWM init.
+// RK84 user_init — recovery chord + full GPIO init + PWM period init.
 //
-// Recovery contract (-R5):
-// - user_init() runs BEFORE usb_init(); the Esc+Space chord check is
-// the first thing here so a USB-init bug can never brick recovery.
-// - The bootloader region (0xF000+) and the app reset-vector slot
-// (0xEFFC) are NEVER touched by application code.
-// - PWM starts at 0xC2 (scheduler on, RGB output select off); the
-// first render phase enables outputs.
+// Recovery contract:
+//   - user_init() runs BEFORE usb_init(); the Esc+Space chord check is
+//     the first thing here so a USB-init bug can never brick recovery.
+//   - The bootloader region (0xF000+) and the app reset-vector slot
+//     (0xEFFC) are NEVER touched by application code.
+//   - The PWM scheduler is NOT started here; indicators_start() turns
+//     it on (PWM00CON = 0xC2 + EPWM0) after the RGB framebuffer is
+//     initialized.
 // =====================================================================
 
 static bool recovery_chord_pressed_once(void);

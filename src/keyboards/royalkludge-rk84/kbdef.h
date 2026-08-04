@@ -20,7 +20,7 @@
 // KEYMAP: default 84-key layout seeded from the factory's default
 // usage table (126-byte) + 7 modifier fields (field = USB modifier
 // bit). Fn = c9r5 hard-coded in the Fn detector. RCtrl = c10r5
-// (idx65 field 0x10). c12r3 = ANSI phantom KC_NO.
+// (USB RCtrl bit). c12r3 = ANSI phantom KC_NO.
 // RGB: 21 PWM column channels x 18 sink phases (6 rows x 3 comp).
 // DUTY2 registers; duty = source * brightness(0-5) * 2,
 // max 2550 < period 2560. 19-phase schedule (0 = matrix only).
@@ -35,16 +35,18 @@
 #define MATRIX_COLS 16
 
 // ---------------------------------------------------------------------
-// Mode switch pins
+// Mode switch pins (NOT IMPLEMENTED in Milestone 1)
 // ---------------------------------------------------------------------
+// P5.5/P5.6 are the factory's wired/wireless selection inputs.
+// Milestone 1 ALWAYS uses USB regardless of physical switch position:
+// the mode state machine is not implemented in this milestone.
 // P5.5 = wired/radio hardware switch. STOCK gates the wired transition
 // behind an unresolved one-shot bit (0x28) — using "P5.5 stable high ->
-// wired" directly is a deliberate SMK board policy , not
-// byte-exact stock behavior. Debounce with the same 16ms two-sample
-// scheme as P5.6.
+// wired" directly is a deliberate SMK board policy, not byte-exact
+// stock behavior. Debounce with the same 16ms two-sample scheme as P5.6.
 // P5.6 = wireless selection (low -> 2.4G profile 0, high -> remembered
-// BT slot 1-3). Two samples per 34-step cycle (~544ms): sample at
-// step 20, 30, decide at 31.
+//        BT slot 1-3). Two samples per 34-step cycle (~544ms): sample at
+//        step 20, 30, decide at 31.
 #define MODE_SWITCH_PIN P5_5
 #define MODE_SWITCH_PIN_BIT _P5_5
 #define WIRELESS_SELECT_PIN P5_6

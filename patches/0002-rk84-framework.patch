@@ -147,7 +147,7 @@ index 4244b76..5e63a93 100644
  }
  
 diff --git a/src/platform/sh68f90a/usb.h b/src/platform/sh68f90a/usb.h
-index e5230aa..13f4160 100644
+index e5230aa..29aeba0 100644
 --- a/src/platform/sh68f90a/usb.h
 +++ b/src/platform/sh68f90a/usb.h
 @@ -4,6 +4,30 @@
@@ -166,7 +166,7 @@ index e5230aa..13f4160 100644
 +#define USB_EP2_MPS 64
 +#endif
 +#ifndef USB_SERIAL_INDEX
-+#define USB_SERIAL_INDEX USB_STRING_SERIAL_NUMBER
++#define USB_SERIAL_INDEX 3 /* serial string index (upstream default) */
 +#endif
 +#ifndef USB_STRING_MANUFACTURER_VALUE
 +#define USB_STRING_MANUFACTURER_VALUE "contact@carlossless.io"
