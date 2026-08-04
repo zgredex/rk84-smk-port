@@ -134,7 +134,7 @@ keycodes.h.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `rk84_stage` | recovery | `recovery` (USB + ISP ID5 + chord only), `matrix` (scan + 6KRO), `rgb` (one-cell RGB) |
+| `rk84_stage` | recovery | `recovery` (USB + ISP ID5 + chord only), `matrix` (scan + 6KRO), `usb` (full wired keyboard: 84 keys, mods, Fn/media, lock LEDs, suspend/resume, no RGB/radio), `rgb` (one-cell RGB) |
 | `rk84_dual_reports` | false | Send simultaneous RK84 EP1 6KRO and EP2 NKRO (host-test first) |
 
 Recovery image contents: normal USB descriptor set and ISP Feature ID 5,

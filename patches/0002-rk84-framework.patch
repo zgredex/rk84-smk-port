@@ -12,7 +12,7 @@ index ac8b5fb..d58d840 100644
  }
  
 diff --git a/src/platform/sh68f90a/usb.c b/src/platform/sh68f90a/usb.c
-index 4244b76..5e63a93 100644
+index 4244b76..440f085 100644
 --- a/src/platform/sh68f90a/usb.c
 +++ b/src/platform/sh68f90a/usb.c
 @@ -11,6 +11,21 @@
@@ -146,11 +146,46 @@ index 4244b76..5e63a93 100644
      SET_EP2_IN_RDY;
  }
  
+@@ -599,11 +629,18 @@ static void usb_setup_irq()
+     }
+ }
+ 
++/* Board-level suspend/resume hooks. Called from the USB ISR only when
++ * the board declares RK84_USB_HOOKS (RK84 kb.c implements them). Other
++ * boards are unaffected: no reference, no link requirement. */
++#ifdef RK84_USB_HOOKS
++void rk84_usb_suspend_hook(void);
++void rk84_usb_resume_hook(void);
++#endif
++
+ void usb_interrupt_handler() __interrupt(_INT_USB)
+ {
+     uint8_t temp_usbif1 = USBIF1;
+     uint8_t temp_usbif2 = USBIF2;
+-
+     if (temp_usbif1 != 0x00) {
+         if (temp_usbif1 & _SOFIF) {
+             USBIF1 &= ~_SOFIF;
+@@ -620,8 +657,14 @@ void usb_interrupt_handler() __interrupt(_INT_USB)
+                 usb_setup_irq();
+             } else if (temp_usbif1 & _RESMIF) { // RESMIF
+                 USBIF1 &= ~_RESMIF;
++#ifdef RK84_USB_HOOKS
++                rk84_usb_resume_hook();
++#endif
+             } else if (temp_usbif1 & _SUSPIF) { // SUSPIF
+                 USBIF1 &= ~_SUSPIF;
++#ifdef RK84_USB_HOOKS
++                rk84_usb_suspend_hook();
++#endif
+             } else if (temp_usbif1 & _USBRSTIF) { // BUSRSTIF
+                 USBIF1 &= ~_USBRSTIF;
+ 
 diff --git a/src/platform/sh68f90a/usb.h b/src/platform/sh68f90a/usb.h
-index e5230aa..8bb6767 100644
+index e5230aa..0652587 100644
 --- a/src/platform/sh68f90a/usb.h
 +++ b/src/platform/sh68f90a/usb.h
-@@ -4,12 +4,37 @@
+@@ -4,19 +4,49 @@
  #include "report.h"
  #include <stdint.h>
  
@@ -188,7 +223,15 @@ index e5230aa..8bb6767 100644
  void    usb_send_report(__xdata report_keyboard_t *report);
  void    usb_send_nkro(__xdata report_nkro_t *report);
  void    usb_send_extra(__xdata report_extra_t *report);
-@@ -18,5 +43,3 @@ uint8_t usb_device_state_get_protocol();
+ uint8_t usb_device_state_get_protocol();
+ 
++/* Board-level suspend/resume hooks, called from the USB ISR only when
++ * RK84_USB_HOOKS is defined by the board (see usb.c). */
++#ifdef RK84_USB_HOOKS
++void rk84_usb_suspend_hook(void);
++void rk84_usb_resume_hook(void);
++#endif
++
  #if DEBUG == 1
  bool usb_is_configured();
  #endif // DEBUG

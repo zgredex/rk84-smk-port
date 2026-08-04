@@ -1,8 +1,8 @@
 diff --git a/meson.build b/meson.build
-index afa6bfd..b7ba39c 100644
+index afa6bfd..a2563ce 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -17,11 +17,36 @@ default_options = {
+@@ -17,11 +17,37 @@ default_options = {
      'product_id': '0xdead',
  }
  
@@ -33,13 +33,14 @@ index afa6bfd..b7ba39c 100644
 +        'rk84_stock_reports': true,
 +        'rk84_recovery_only': rk84_stage == 'recovery',
 +        'rk84_rgb': rk84_stage == 'rgb',
++        'rk84_usb_full': rk84_stage == 'usb',
 +        'rk84_dual_reports': get_option('rk84_dual_reports'),
 +        'rk84_active_keycode_cache': true,
 +    }],
  ]
  
  # SMK
-@@ -123,6 +148,8 @@ endif
+@@ -123,6 +149,8 @@ endif
  
  if get_option('buildtype') == 'debug'
      cc_base_args += '-DDEBUG=1'
@@ -48,7 +49,7 @@ index afa6bfd..b7ba39c 100644
  endif
  
  sdar_args = ['-rc']
-@@ -130,7 +157,7 @@ sdar_args = ['-rc']
+@@ -130,7 +158,7 @@ sdar_args = ['-rc']
  cc = find_program('sdcc', required : true)
  sdar = find_program('sdar', required : true)
  packihx = find_program('packihx', required : true)
@@ -57,7 +58,7 @@ index afa6bfd..b7ba39c 100644
  
  # Host-side generator that bakes per-device LED animation geometry into ROM tables
  # (see utils/led_geometry_gen.c). Compiled once with the host compiler at configure
-@@ -181,6 +208,50 @@ foreach part : parts
+@@ -181,6 +209,55 @@ foreach part : parts
              '-DUSB_PID=@0@'.format(options['product_id']),
          ]
  
@@ -98,6 +99,11 @@ index afa6bfd..b7ba39c 100644
 +        else
 +            cc_args += '-DRK84_RECOVERY_ONLY=0'
 +        endif
++        if options.get('rk84_usb_full', false)
++            cc_args += '-DRK84_USB_FULL=1'
++        else
++            cc_args += '-DRK84_USB_FULL=0'
++        endif
 +        if options.get('rk84_dual_reports', false)
 +            cc_args += '-DRK84_DUAL_REPORTS=1'
 +        endif
@@ -108,7 +114,7 @@ index afa6bfd..b7ba39c 100644
          wireless = options.get('wireless', '')
          if wireless == 'bk3632'
              src_main += src_platform_bk3632
-@@ -260,10 +331,16 @@ foreach part : parts
+@@ -260,10 +337,16 @@ foreach part : parts
          )
  
          flash_target_name = '@0@flash'.format(prefix)
@@ -130,7 +136,7 @@ index afa6bfd..b7ba39c 100644
          message('target available: @0@, flash: @1@'.format(hex_smk_target_name, flash_target_name))
      endforeach
 diff --git a/meson.options b/meson.options
-index a2af75d..7961056 100644
+index a2af75d..beabdda 100644
 --- a/meson.options
 +++ b/meson.options
 @@ -1 +1,16 @@
@@ -139,9 +145,9 @@ index a2af75d..7961056 100644
 +option(
 +    'rk84_stage',
 +    type : 'combo',
-+    choices : ['recovery', 'matrix', 'rgb'],
++    choices : ['recovery', 'matrix', 'usb', 'rgb'],
 +    value : 'recovery',
-+    description : 'RK84 bring-up stage'
++    description : 'RK84 bring-up stage: recovery (ISP only), matrix (scan+reports), usb (full wired keyboard), rgb (matrix + static RGB)'
 +)
 +
 +option(

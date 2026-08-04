@@ -104,9 +104,38 @@ enum custom_keycodes {
 #ifndef RK84_RECOVERY_ONLY
 #define RK84_RECOVERY_ONLY 0
 #endif
+#ifndef RK84_USB_FULL
+#define RK84_USB_FULL 0
+#endif
+#ifndef RK84_WIRELESS_ENABLE
+#define RK84_WIRELESS_ENABLE 0
+#endif
 
 /* Recovery-only and RGB are mutually exclusive: a recovery image must
  * not initialize or drive any RGB/PWM output. */
 #if RK84_RECOVERY_ONLY && RK84_RGB_ENABLE
 #    error "Recovery-only and RGB modes are mutually exclusive"
+#endif
+
+/* Recovery firmware must not initialize the radio. */
+#if RK84_RECOVERY_ONLY && RK84_WIRELESS_ENABLE
+#    error "Recovery firmware must not initialize the radio"
+#endif
+
+/* The USB-full stage is the complete wired keyboard: no RGB, no radio.
+ * It is mutually exclusive with recovery (recovery has no scan loop). */
+#if RK84_USB_FULL && RK84_RECOVERY_ONLY
+#    error "USB-full and recovery-only stages are mutually exclusive"
+#endif
+#if RK84_USB_FULL && RK84_RGB_ENABLE
+#    error "USB-full stage must not enable RGB (RGB is a later stage)"
+#endif
+#if RK84_USB_FULL && RK84_WIRELESS_ENABLE
+#    error "USB-full stage must not enable the radio (wireless is a later stage)"
+#endif
+
+/* The USB-full stage provides the board-level suspend/resume hooks
+ * (kb.c) that the framework's USB ISR calls on SUSPIF/RESMIF. */
+#if RK84_USB_FULL
+#define RK84_USB_HOOKS 1
 #endif
