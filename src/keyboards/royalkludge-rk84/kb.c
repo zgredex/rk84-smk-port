@@ -87,6 +87,7 @@ bool rk84_usb_scroll_lock(void)
 #include "sh68f90a.h"
 
 static __bit rk84_usb_suspended;
+static __bit rk84_usb_configured;      /* SET_CONFIGURATION(1) received */
 static __bit rk84_usb_wake_signalled;
 static __bit rk84_usb_pending_wake;    /* physical key-down while suspended */
 static __bit rk84_usb_resync_needed;   /* resume/config: resend state */
@@ -116,6 +117,7 @@ void rk84_usb_reset_hook(void)
      * in the resume -> reset-before-poll sequence a stale bit would
      * otherwise cause a premature send during enumeration. */
     rk84_usb_suspended          = 0;
+    rk84_usb_configured         = 0;
     rk84_usb_pending_wake       = 0;
     rk84_usb_wake_signalled     = 0;
     rk84_usb_resync_needed      = 0;
@@ -126,9 +128,17 @@ void rk84_usb_config_hook(void)
 {
     /* SET_CONFIGURATION(1): device (re)configured. The host forgot all
      * report state, so the resend must be FORCED (poison last-sent). */
-    rk84_usb_suspended      = 0;
+    rk84_usb_suspended          = 0;
+    rk84_usb_configured         = 1;
     rk84_usb_force_extra_resync = 1;
-    rk84_usb_resync_needed  = 1;
+    rk84_usb_resync_needed      = 1;
+}
+
+void rk84_usb_deconfig_hook(void)
+{
+    /* SET_CONFIGURATION(0): device deconfigured — no report traffic
+     * until the next SET_CONFIGURATION(1). */
+    rk84_usb_configured = 0;
 }
 #endif /* RK84_USB_FULL — end of suspend-state block (hooks above) */
 
@@ -141,7 +151,7 @@ void rk84_usb_config_hook(void)
 void kb_send_report(__xdata report_keyboard_t *report)
 {
 #if RK84_USB_FULL
-    if (rk84_usb_suspended) {
+    if (rk84_usb_suspended || !rk84_usb_configured) {
         return;
     }
 #endif
@@ -151,26 +161,27 @@ void kb_send_report(__xdata report_keyboard_t *report)
 void kb_send_nkro(__xdata report_nkro_t *report)
 {
 #if RK84_USB_FULL
-    if (rk84_usb_suspended) {
+    if (rk84_usb_suspended || !rk84_usb_configured) {
         return;
     }
 #endif
     usb_send_nkro(report);
 }
 
-/* Returns true while reports are dropped (USB suspended). host.c uses
- * this to keep its last-sent cache stale so extra reports resend. */
+/* Returns true while reports are dropped (USB suspended or not yet
+ * configured). host.c uses this to keep its last-sent cache stale so
+ * extra reports resend. */
 #if RK84_USB_FULL
 bool rk84_usb_is_suspended(void)
 {
-    return rk84_usb_suspended;
+    return rk84_usb_suspended || !rk84_usb_configured;
 }
 #endif
 
 void kb_send_extra(__xdata report_extra_t *report)
 {
 #if RK84_USB_FULL
-    if (rk84_usb_suspended) {
+    if (rk84_usb_suspended || !rk84_usb_configured) {
         return;   /* dropped; host.c keeps last_sent stale */
     }
 #endif

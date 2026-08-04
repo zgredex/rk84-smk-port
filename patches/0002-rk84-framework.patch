@@ -57,7 +57,7 @@ index ac8b5fb..d58d840 100644
  }
  
 diff --git a/src/platform/sh68f90a/usb.c b/src/platform/sh68f90a/usb.c
-index 4244b76..dadeaa3 100644
+index 4244b76..8d79091 100644
 --- a/src/platform/sh68f90a/usb.c
 +++ b/src/platform/sh68f90a/usb.c
 @@ -11,6 +11,21 @@
@@ -205,7 +205,7 @@ index 4244b76..dadeaa3 100644
      SET_EP2_IN_RDY;
  }
  
-@@ -599,11 +636,31 @@ static void usb_setup_irq()
+@@ -599,11 +636,32 @@ static void usb_setup_irq()
      }
  }
  
@@ -222,6 +222,7 @@ index 4244b76..dadeaa3 100644
 +void rk84_usb_resume_hook(void);
 +void rk84_usb_reset_hook(void);
 +void rk84_usb_config_hook(void);
++void rk84_usb_deconfig_hook(void);
 +
 +/* True when the host enabled remote wakeup via SET_FEATURE. */
 +bool usb_remote_wakeup_enabled(void)
@@ -238,7 +239,7 @@ index 4244b76..dadeaa3 100644
      if (temp_usbif1 != 0x00) {
          if (temp_usbif1 & _SOFIF) {
              USBIF1 &= ~_SOFIF;
-@@ -620,8 +677,14 @@ void usb_interrupt_handler() __interrupt(_INT_USB)
+@@ -620,8 +678,14 @@ void usb_interrupt_handler() __interrupt(_INT_USB)
                  usb_setup_irq();
              } else if (temp_usbif1 & _RESMIF) { // RESMIF
                  USBIF1 &= ~_RESMIF;
@@ -253,7 +254,7 @@ index 4244b76..dadeaa3 100644
              } else if (temp_usbif1 & _USBRSTIF) { // BUSRSTIF
                  USBIF1 &= ~_USBRSTIF;
  
-@@ -761,6 +824,12 @@ static void usb_set_configuration_handler(__xdata struct usb_req_setup *req)
+@@ -761,8 +825,19 @@ static void usb_set_configuration_handler(__xdata struct usb_req_setup *req)
  
              if (active_configuration != 0) {
                  usb_device_state = USB_DEVICE_STATE_CONFIGURED;
@@ -265,12 +266,19 @@ index 4244b76..dadeaa3 100644
 +#endif
              } else {
                  usb_device_state = USB_DEVICE_STATE_ADDRESSED;
++#ifdef RK84_USB_HOOKS
++                /* SET_CONFIGURATION(0): deconfigured — stop report
++                 * traffic until the next SET_CONFIGURATION(1). */
++                rk84_usb_deconfig_hook();
++#endif
              }
+ 
+             CLEAR_EP0_CNT;
 diff --git a/src/platform/sh68f90a/usb.h b/src/platform/sh68f90a/usb.h
-index e5230aa..6bff95a 100644
+index e5230aa..d333df8 100644
 --- a/src/platform/sh68f90a/usb.h
 +++ b/src/platform/sh68f90a/usb.h
-@@ -4,19 +4,52 @@
+@@ -4,19 +4,53 @@
  #include "report.h"
  #include <stdint.h>
  
@@ -317,6 +325,7 @@ index e5230aa..6bff95a 100644
 +void rk84_usb_resume_hook(void);
 +void rk84_usb_reset_hook(void);
 +void rk84_usb_config_hook(void);
++void rk84_usb_deconfig_hook(void);
 +bool usb_remote_wakeup_enabled(void);
 +#endif
 +

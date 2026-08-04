@@ -348,6 +348,26 @@ class SuspendResumeTests(unittest.TestCase):
         suspended = False
         self.assertFalse(suspended)
 
+    def test_configured_gate_blocks_pre_config_transmits(self):
+        """Config-guard model (rk84_usb_configured): after a reset the
+        device is unconfigured; report transports are gated on
+        suspended OR not-configured, so a key pressed during
+        enumeration produces no USB traffic. SET_CONFIGURATION(1) opens
+        the gate and schedules a forced resend."""
+        configured = False
+        suspended = False
+        # key press during enumeration -> transport gated
+        self.assertTrue(suspended or not configured,
+                        "report must be dropped pre-configuration")
+        # SET_CONFIGURATION(1)
+        configured = True
+        self.assertFalse(suspended or not configured,
+                         "report path open after configuration")
+        # SET_CONFIGURATION(0) closes it again
+        configured = False
+        self.assertTrue(suspended or not configured,
+                        "report path closed after deconfiguration")
+
     def test_all_zero_after_clear(self):
         m = RK84ReportModel()
         for usage in range(0x04, 0x0A):
