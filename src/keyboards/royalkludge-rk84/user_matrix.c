@@ -44,8 +44,14 @@
 #define MATRIX_COL_MASK_P5 0x07
 
 /* See the header comment: 0x00 is impossible as a raw reading (bits
- * 6-7 are always forced high), so it is a safe invalid sentinel. */
-#define MATRIX_SAMPLE_INVALID 0x00
+ * 6-7 are always forced high), so it is a safe invalid sentinel.
+ * The framework's matrix_scan_step() preserves the previous column
+ * on this value only when the board defines SMK_MATRIX_SAMPLE_INVALID
+ * (via meson cc_args). */
+#ifndef SMK_MATRIX_SAMPLE_INVALID
+#define SMK_MATRIX_SAMPLE_INVALID 0x00
+#endif
+#define MATRIX_SAMPLE_INVALID SMK_MATRIX_SAMPLE_INVALID
 
 static void columns_high(void)
 {

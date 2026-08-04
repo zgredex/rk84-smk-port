@@ -460,7 +460,7 @@ index 00f5137..6a70ddd 100644
 + * when unchanged. Also safe after resume. */
 +void host_extra_force_resync(void);
 diff --git a/src/smk/matrix.c b/src/smk/matrix.c
-index b1d81c1..35b7fd5 100644
+index b1d81c1..54774bc 100644
 --- a/src/smk/matrix.c
 +++ b/src/smk/matrix.c
 @@ -23,6 +23,47 @@ volatile bool                 matrix_updated;
@@ -639,20 +639,28 @@ index b1d81c1..35b7fd5 100644
              }
          }
  
-@@ -175,7 +278,15 @@ void matrix_scan_step()
+@@ -175,7 +278,24 @@ void matrix_scan_step()
  
          user_matrix_post_scan();
  
--        matrix[current_step] = ~column_state;
-+        if (column_state == MATRIX_SAMPLE_INVALID) {
-+            /* Invalid sample (two readings disagreed). PRESERVE the
-+             * previous stable column value: writing the complement of
++        /* Invalid-scan preservation, scoped: only boards that define
++         * SMK_MATRIX_SAMPLE_INVALID (RK84 via meson cc_args) treat a
++         * sentinel reading as "preserve previous column". The generic
++         * matrix API for every other board is unchanged (any raw value,
++         * including zero, is stored as-is). */
++#ifdef SMK_MATRIX_SAMPLE_INVALID
++        if (column_state == SMK_MATRIX_SAMPLE_INVALID) {
++            /* Invalid sample (two readings disagreed): PRESERVE the
++             * previous stable column value. Writing the complement of
 +             * the sentinel would fabricate an "all keys released in
 +             * this column" event (false release followed by false
 +             * re-press on the next stable sample). */
 +        } else {
 +            matrix[current_step] = ~column_state;
 +        }
++#else
+         matrix[current_step] = ~column_state;
++#endif
  
          // keyboard_update_switches();
      }
@@ -1041,18 +1049,23 @@ index f1791d9..bfce408 100644
  void del_key_from_report(report_keyboard_t *keyboard_report, uint8_t key);
  void clear_keys_from_report(report_keyboard_t *keyboard_report);
 diff --git a/src/user/user_matrix.h b/src/user/user_matrix.h
-index 25b25d5..a501b51 100644
+index 25b25d5..5c4751f 100644
 --- a/src/user/user_matrix.h
 +++ b/src/user/user_matrix.h
-@@ -2,6 +2,12 @@
+@@ -2,6 +2,17 @@
  
  #include <stdint.h>
  
-+/* Invalid-scan sentinel. rows_read_levels() forces bits 6-7 high, so
-+ * every valid reading is 0xC0..0xFF; 0x00 is impossible and therefore
-+ * unambiguous. matrix_scan_step() skips the matrix[col] write when the
-+ * scanner returns this value (preserving the previous stable column). */
-+#define MATRIX_SAMPLE_INVALID 0x00
++/* Invalid-scan sentinel (RK84 board, defined via meson cc_args as
++ * -DSMK_MATRIX_SAMPLE_INVALID=0x00). rows_read_levels() forces bits
++ * 6-7 high, so every valid reading is 0xC0..0xFF; 0x00 is impossible
++ * and therefore unambiguous. matrix_scan_step() skips the matrix[col]
++ * write when the scanner returns this value (preserving the previous
++ * stable column). The generic matrix API is unchanged for boards that
++ * do not define it. */
++#ifdef SMK_MATRIX_SAMPLE_INVALID
++#define MATRIX_SAMPLE_INVALID SMK_MATRIX_SAMPLE_INVALID
++#endif
 +
  void    user_matrix_pre_scan(uint8_t col);
  uint8_t user_matrix_scan_col(uint8_t col);

@@ -19,6 +19,10 @@ jobs:
           git clone https://github.com/carlossless/smk.git smk-upstream
           git -C smk-upstream checkout 08f4d0253389551b9ae9aad2464e2d7cacaf662e
 
+      - name: Apply RK84 patches (harness needs patched report.c)
+        run: |
+          SMK_DIR=$PWD/smk-upstream bash $PWD/tools/apply-to-smk.sh
+
       - name: Run synthetic test suite
         env:
           RK84_SMK_TREE: ${{ github.workspace }}/smk-upstream

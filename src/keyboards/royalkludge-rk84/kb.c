@@ -89,7 +89,8 @@ bool rk84_usb_scroll_lock(void)
 static __bit rk84_usb_suspended;
 static __bit rk84_usb_wake_signalled;
 static __bit rk84_usb_pending_wake;    /* physical key-down while suspended */
-static __bit rk84_usb_resync_needed;   /* resume/reset/config: resend state */
+static __bit rk84_usb_resync_needed;   /* resume/config: resend state */
+static __bit rk84_usb_force_extra_resync; /* reset/config: poison last-sent */
 
 /* ---- ISR hooks: flags only ---- */
 
@@ -109,17 +110,21 @@ void rk84_usb_resume_hook(void)
 void rk84_usb_reset_hook(void)
 {
     /* Bus reset / unplug / host reset: the host lost all report state.
-     * Clear suspend so reports are not dropped; schedule a resend. */
+     * Clear suspend so reports are not dropped. Do NOT schedule the
+     * resend yet — wait for SET_CONFIGURATION(1) before transmitting
+     * anything (prevents report traffic during reset enumeration). */
     rk84_usb_suspended      = 0;
     rk84_usb_pending_wake   = 0;
     rk84_usb_wake_signalled = 0;
-    rk84_usb_resync_needed  = 1;
+    rk84_usb_force_extra_resync = 1;
 }
 
 void rk84_usb_config_hook(void)
 {
-    /* SET_CONFIGURATION(1): device (re)configured — resend full state. */
+    /* SET_CONFIGURATION(1): device (re)configured. The host forgot all
+     * report state, so the resend must be FORCED (poison last-sent). */
     rk84_usb_suspended      = 0;
+    rk84_usb_force_extra_resync = 1;
     rk84_usb_resync_needed  = 1;
 }
 #endif /* RK84_USB_FULL — end of suspend-state block (hooks above) */
@@ -190,9 +195,15 @@ void rk84_usb_mainloop_poll(void)
          * normal transition path would never transmit it). */
         report_force_resend();
         send_keyboard_report();
-        /* Resend System/Consumer so a release dropped while suspended
-         * is not lost on the host. */
-        host_extra_resync();
+        /* Resend System/Consumer: plain resync after resume (a release
+         * dropped while suspended), FORCED after reset/config (the host
+         * forgot everything, so last-sent must be poisoned). */
+        if (rk84_usb_force_extra_resync) {
+            rk84_usb_force_extra_resync = 0;
+            host_extra_force_resync();
+        } else {
+            host_extra_resync();
+        }
     }
 
     /* Remote wake: first physical press while suspended + host enabled
