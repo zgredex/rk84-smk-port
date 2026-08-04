@@ -6,6 +6,8 @@ Normal SMK policy: linked code < 0xEC00; settings sector 0xEC00-0xEDFF;
 redirect sector containing 0xEFFC is never erased by the app;
 bootloader 0xF000-0xFFFF.
 
+Uses the shared strictly-validated parser (hexlib).
+
 Usage:
     python3 check-hex-bounds.py build/royalkludge-rk84_default_smk.hex
     python3 check-hex-bounds.py build/royalkludge-rk84_default_smk.hex --limit 0xEC00
@@ -13,84 +15,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-
-def iter_hex_addresses(path: Path):
-    upper = 0
-    eof_seen = False
-
-    for line_no, raw in enumerate(path.read_text().splitlines(), start=1):
-        line = raw.strip()
-
-        if not line.startswith(":"):
-            raise ValueError(f"{path}:{line_no}: invalid Intel HEX line")
-
-        data = bytes.fromhex(line[1:])
-
-        # Total record length: count + addr(2) + type(1) + checksum(1).
-        # A line like ":00000000" (4 bytes) or ":0000000000" (5 bytes
-        # with a zero sum) must be rejected before unpacking.
-        if len(data) < 5:
-            raise ValueError(f"{path}:{line_no}: truncated Intel HEX record")
-
-        count = data[0]
-        addr = (data[1] << 8) | data[2]
-        record_type = data[3]
-
-        if len(data) != count + 5:
-            raise ValueError(
-                f"{path}:{line_no}: record length mismatch "
-                f"(expected {count + 5} bytes, got {len(data)})"
-            )
-
-        payload = data[4:4 + count]
-
-        # Structural validation: declared length must match the line,
-        # and the checksum byte must make the whole record sum to 0.
-        if sum(data) & 0xFF:
-            raise ValueError(
-                f"{path}:{line_no}: checksum mismatch"
-            )
-
-        if eof_seen:
-            raise ValueError(
-                f"{path}:{line_no}: data after EOF record"
-            )
-
-        if record_type == 0x00:
-            # Zero-length data records carry no addresses and can pad a
-            # malformed file; reject them (strict mode for a flash
-            # safety checker).
-            if count == 0:
-                raise ValueError(f"{path}:{line_no}: zero-length data record")
-            for offset in range(len(payload)):
-                yield upper + addr + offset
-        elif record_type == 0x04:
-            if len(payload) != 2:
-                raise ValueError(f"{path}:{line_no}: bad ELA record")
-            upper = ((payload[0] << 8) | payload[1]) << 16
-        elif record_type == 0x02:
-            # Extended segment address: (payload << 4) * 16.
-            if len(payload) != 2:
-                raise ValueError(f"{path}:{line_no}: bad ESA record")
-            upper = ((payload[0] << 8) | payload[1]) << 4
-        elif record_type == 0x01:
-            if count != 0 or addr != 0:
-                raise ValueError(f"{path}:{line_no}: malformed EOF record")
-            eof_seen = True
-            # Continue scanning so data after EOF is caught by the
-            # eof_seen guard above.
-            continue
-        else:
-            # Unknown record types are rejected rather than silently
-            # ignored: an unrecognized record could hide data.
-            raise ValueError(
-                f"{path}:{line_no}: unsupported record type {record_type:#04x}"
-            )
-
-    if not eof_seen:
-        raise ValueError(f"{path}: missing EOF record (type 01)")
+from hexlib import hex_extent
 
 
 def main() -> int:
@@ -99,16 +27,24 @@ def main() -> int:
     parser.add_argument("--limit", type=lambda value: int(value, 0), default=0xBC00)
     args = parser.parse_args()
 
-    addresses = list(iter_hex_addresses(args.hex_file))
-    highest = max(addresses, default=-1)
+    try:
+        written, lowest, highest = hex_extent(args.hex_file)
+    except ValueError as e:
+        print(f"FAIL: {args.hex_file}: {e}", file=sys.stderr)
+        return 1
 
     if highest >= args.limit:
-        raise SystemExit(
+        print(
             f"FAIL: highest address 0x{highest:04X} "
-            f"reaches limit 0x{args.limit:04X}"
+            f"reaches limit 0x{args.limit:04X}",
+            file=sys.stderr,
         )
+        return 1
 
-    print(f"OK: highest address 0x{highest:04X}, below 0x{args.limit:04X}")
+    print(
+        f"OK: {written} bytes written, lowest 0x{lowest:04X}, "
+        f"highest 0x{highest:04X}, below 0x{args.limit:04X}"
+    )
     return 0
 
 

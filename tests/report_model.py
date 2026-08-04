@@ -87,17 +87,19 @@ class RK84ReportModel:
         """ID 2 + 2 usage bytes little-endian = 3 bytes total."""
         return bytes([2, self.consumer & 0xFF, (self.consumer >> 8) & 0xFF])
 
-    def send_all(self) -> list[bytes]:
-        """Reports that would be sent to the host."""
+    def keyboard_reports(self) -> list[bytes]:
+        """Reports sent on every keyboard-state change.
+
+        Firmware behavior (RK84_STOCK_REPORTS):
+          - EP1 6KRO boot report: ALWAYS sent
+          - EP2 NKRO (ID 6): only when RK84_DUAL_REPORTS is defined
+
+        System and Consumer reports are separate event paths, not part
+        of the periodic keyboard report.
+        """
         out = [self.boot_report()]
         if self.dual:
             out.append(self.nkro_report())
-        else:
-            out.append(self.nkro_report())  # both maintained; gating at send
-        if self.system:
-            out.append(self.system_report())
-        if self.consumer:
-            out.append(self.consumer_report())
         return out
 
     # ------------------------------------------------------------------

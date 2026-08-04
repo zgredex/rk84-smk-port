@@ -2,8 +2,9 @@
 """Assert that a recovery RK84 image contains no PWM scheduler enable.
 
 A recovery-only image must not be able to start the PWM interrupt.
-This scan checks the FINAL linked image (.ihx -> raw bytes) for the
-specific compiler encodings produced by this SDCC build:
+This scan checks the FINAL linked image (.hex -> raw bytes via the
+shared hexlib parser) for the specific compiler encodings produced by
+this SDCC build:
 
   - no `ORL IEN1,#0x02`  (EPWM0 enable, IEN1 = SFR 0xA9)
   - no `MOV DPTR,#0xFF80; MOV A,#0xC2; MOVX @DPTR,A` (PWM00CON = 0xC2)
@@ -15,12 +16,15 @@ through the accumulator). A simulator that traps every write to IEN1
 and 0xFF80 would be the stronger invariant.
 
 Usage:
-    python3 check-recovery-no-pwm.py build/royalkludge-rk84_default_smk.ihx
+    python3 check-recovery-no-pwm.py build/royalkludge-rk84_default_smk.hex
 """
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+from hexlib import parse_hex
 
 # IEN1 is SFR 0xA9 on SH68F90A; EPWM0 is bit 1.
 # ORL direct,#imm = 0x43
@@ -32,61 +36,16 @@ PWM00CON_C2 = bytes([0x90, 0xFF, 0x80, 0x74, 0xC2, 0xF0])
 PWM00CON_CA = bytes([0x90, 0xFF, 0x80, 0x74, 0xCA, 0xF0])
 
 
-def ihx_to_bytes(path: Path) -> bytes:
-    data = bytearray()
-    upper = 0
-    for line_no, raw in enumerate(path.read_text().splitlines(), start=1):
-        line = raw.strip()
-        if not line.startswith(":"):
-            raise ValueError(f"{path}:{line_no}: invalid Intel HEX line")
-        rec = bytes.fromhex(line[1:])
-
-        # Total record length: count + addr(2) + type(1) + checksum(1).
-        if len(rec) < 5:
-            raise ValueError(f"{path}:{line_no}: truncated Intel HEX record")
-
-        count = rec[0]
-        addr = (rec[1] << 8) | rec[2]
-        typ = rec[3]
-
-        if len(rec) != count + 5:
-            raise ValueError(
-                f"{path}:{line_no}: record length mismatch "
-                f"(expected {count + 5} bytes, got {len(rec)})"
-            )
-
-        payload = rec[4:4 + count]
-        if sum(rec) & 0xFF:
-            raise ValueError(f"{path}:{line_no}: checksum mismatch")
-
-        if typ == 0x00:
-            # Absolute address = extended-linear base + record address.
-            absolute = upper + addr
-            if absolute + count > len(data):
-                data.extend(b"\x00" * (absolute + count - len(data)))
-            data[absolute:absolute + count] = payload
-        elif typ == 0x04:
-            # Extended linear address; update the segment base.
-            if count != 2:
-                raise ValueError(f"{path}:{line_no}: bad ELA record")
-            upper = ((payload[0] << 8) | payload[1]) << 16
-        elif typ == 0x01:
-            if count != 0 or addr != 0:
-                raise ValueError(f"{path}:{line_no}: malformed EOF record")
-            return bytes(data)
-        else:
-            raise ValueError(
-                f"{path}:{line_no}: unsupported record type {typ:#04x}"
-            )
-    raise ValueError(f"{path}: missing EOF record")
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("ihx_file", type=Path)
+    parser.add_argument("hex_file", type=Path)
     args = parser.parse_args()
 
-    blob = ihx_to_bytes(args.ihx_file)
+    try:
+        blob = parse_hex(args.hex_file)
+    except ValueError as e:
+        print(f"FAIL: {args.hex_file}: {e}", file=sys.stderr)
+        return 1
 
     epwm0 = blob.count(EPWM0_ENABLE)
     c2 = blob.count(PWM00CON_C2)
@@ -97,7 +56,8 @@ def main() -> int:
     print(f"PWM00CON = 0xCA writes:  {ca}")
 
     if epwm0 or c2 or ca:
-        raise SystemExit("FAIL: recovery image contains a PWM enable path")
+        print("FAIL: recovery image contains a PWM enable path", file=sys.stderr)
+        return 1
     print("OK: recovery image has no PWM scheduler enable path")
     return 0
 

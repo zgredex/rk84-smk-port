@@ -76,22 +76,32 @@ python3 tools/make-manifest.py build/..._smk.hex build/..._smk.ihx --build-dir b
 
 The test suite covers:
 
-- **HEX parsers**: truncated records, bad checksums, missing/malformed
-  EOF, data after EOF, type 0x02/0x04 addressing, limits at
-  0xBC00/0xEC00/0xEFFC/0xF000
+- **hexlib (shared parser)**: truncated records, bad checksums,
+  missing/malformed EOF, data after EOF, type 0x02/0x04 addressing,
+  ELA/ESA segment bases, dense-image reconstruction, extents
+- **HEX bounds**: limits at 0xBC00/0xEC00/0xEFFC/0xF000
 - **PWM invariant**: no EPWM0 enable / PWM00CON 0xC2/0xCA in recovery
   images, including above-64 KiB addressing
-- **USB descriptors**: VID:PID, bcdDevice, serial index, EP sizes,
-  Feature ID 5, NKRO usage range, System/Consumer sizes
+- **USB descriptors (structural)**: each HID report descriptor is
+  located by its collection marker and parsed item-by-item — VID:PID,
+  bcdDevice, serial index, EP sizes, Feature ID 5, NKRO usage range,
+  System/Consumer payload bytes
 - **Report model**: 6KRO, modifiers, rollover, NKRO first/last usage,
-  usage>0x70 rejection, System 2B, Consumer 3B, golden fixtures
-- **Matrix/layer model**: sticky-key sequences (A/Fn/A, Fn/F8/Fn/F8,
-  same-frame Fn+F8, unstable column), Fn never in report, recovery
-  ignores matrix
-- **RGB scheduler**: framebuffer bounds, channel/sink range, duty <
-  period, one column per interrupt, recovery zero-writes
-- **Reproducibility**: two clean builds byte-identical, manifest
-  consistency
+  usage>0x70 rejection, dual-report gate (dual=false sends EP1 only),
+  System 2B, Consumer 3B
+- **Matrix/layer model (source-faithful)**: the keymap is parsed from
+  layout.c + keycodes.h (never hand-approximated; A=r3c1, F8=r0c8,
+  Fn=r5c9=MO(1), RCtrl=r5c10); sticky-key sequences, documented
+  scan-order same-frame behavior (col ascending — F8 before Fn emits
+  plain F8), Fn never in report, recovery ignores matrix
+- **RGB scheduler**: independent 16-col matrix / 19-phase RGB
+  counters, combined schedule repeats at lcm(16,19)=304, framebuffer
+  bounds, duty < period, recovery zero-writes
+- **Reproducibility**: two clean builds byte-identical (performed
+  live, not comparing pre-built files); manifest consistency
+
+All models mirror the pinned SMK sources; source-parity tests fail if
+the keymap parse drifts from layout.c/keycodes.h.
 
 ## Bench toolkit
 

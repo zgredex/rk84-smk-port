@@ -1,0 +1,5 @@
+session:      t2
+timestamp:    2026-08-04T14:58:38+0200
+host:         Darwin 25.5.0 arm64
+port_commit:  e41db338b5f049b1084f7a30276349bd63ba2f6e
+stock_backup_md5: 617bfb0b3cba6811f7f28e11cbc41f09

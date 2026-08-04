@@ -15,6 +15,25 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TOOLS = REPO_ROOT / "tools"
 
+# Artifact paths come from environment variables (set by CI integration
+# jobs or locally); fall back to common local build trees.
+_RECOVERY_HEX = Path(os.environ.get(
+    "RK84_RECOVERY_HEX",
+    "/tmp/smk/build-f-recovery/royalkludge-rk84_default_smk.hex",
+))
+_RECOVERY_IHX = Path(os.environ.get(
+    "RK84_RECOVERY_IHX",
+    "/tmp/smk/build-f-recovery/royalkludge-rk84_default_smk.ihx",
+))
+_MATRIX_HEX = Path(os.environ.get(
+    "RK84_MATRIX_HEX",
+    "/tmp/smk/build-f-matrix/royalkludge-rk84_default_smk.hex",
+))
+_MATRIX_IHX = Path(os.environ.get(
+    "RK84_MATRIX_IHX",
+    "/tmp/smk/build-f-matrix/royalkludge-rk84_default_smk.ihx",
+))
+
 
 # ---------------------------------------------------------------------
 # Intel HEX construction helpers
@@ -138,29 +157,41 @@ def at_boundary(limit: int) -> str:
 
 
 # ---------------------------------------------------------------------
-# Real build products (optional)
+# Real build products (env-var driven; integration tests FAIL when
+# required artifacts are absent, synthetic tests never need them)
 # ---------------------------------------------------------------------
 
 def find_recovery_hex() -> Path | None:
-    """Locate a built recovery .hex from the local SMK working tree."""
-    for cand in [
-        Path("/tmp/smk/build-f-recovery/royalkludge-rk84_default_smk.hex"),
-        Path("/tmp/smk/build-rec/royalkludge-rk84_default_smk.hex"),
-        Path("/tmp/smk/build-rk84-recovery/royalkludge-rk84_default_smk.hex"),
-    ]:
-        if cand.exists():
-            return cand
+    if _RECOVERY_HEX.exists():
+        return _RECOVERY_HEX
     return None
 
 
 def find_recovery_ihx() -> Path | None:
-    for cand in [
-        Path("/tmp/smk/build-f-recovery/royalkludge-rk84_default_smk.ihx"),
-        Path("/tmp/smk/build-rec/royalkludge-rk84_default_smk.ihx"),
-    ]:
-        if cand.exists():
-            return cand
+    if _RECOVERY_IHX.exists():
+        return _RECOVERY_IHX
     return None
+
+
+def find_matrix_ihx() -> Path | None:
+    if _MATRIX_IHX.exists():
+        return _MATRIX_IHX
+    return None
+
+
+def require_recovery_artifacts():
+    """Integration helper: raise (fail the test) if the recovery
+    artifacts are missing — required integration tests must not skip."""
+    missing = []
+    if not _RECOVERY_HEX.exists():
+        missing.append(f"RK84_RECOVERY_HEX={_RECOVERY_HEX}")
+    if not _RECOVERY_IHX.exists():
+        missing.append(f"RK84_RECOVERY_IHX={_RECOVERY_IHX}")
+    if missing:
+        raise AssertionError(
+            "recovery artifacts required but missing: "
+            + "; ".join(missing)
+        )
 
 
 def sha256(path: Path) -> str:

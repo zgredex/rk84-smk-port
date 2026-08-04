@@ -15,7 +15,7 @@ from .report_model import (
 
 # HID usages
 KC_A = 0x04
-KC_F8 = 0x42
+KC_F8 = 0x41
 KC_ENTER = 0x28
 MEDIA_PLAY_PAUSE = 0x00CD  # transport play/pause
 
@@ -121,21 +121,60 @@ class SystemConsumerTests(unittest.TestCase):
         m.set_consumer(0x0102)
         self.assertEqual(m.consumer_report(), bytes([2, 0x02, 0x01]))
 
-    def test_dual_and_single_both_emit_nkro(self):
+    def test_dual_gate_off(self):
+        """dual=false: only the 8-byte EP1 report is sent."""
         m = RK84ReportModel(dual=False)
         m.add_key(KC_A)
-        reports = m.send_all()
-        self.assertEqual(len(reports), 2)  # boot + nkro
+        reports = m.keyboard_reports()
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(len(reports[0]), 8)
+
+    def test_dual_gate_on(self):
+        """dual=true: EP1 8B + ID6 16B."""
+        m = RK84ReportModel(dual=True)
+        m.add_key(KC_A)
+        reports = m.keyboard_reports()
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(len(reports[0]), 8)
+        self.assertEqual(reports[1][0], 6)
+        self.assertEqual(len(reports[1]), 16)
+
+    def test_modifiers_ep1_only(self):
+        m = RK84ReportModel(dual=True)
+        m.add_mods(MOD_LCTRL)
+        m.add_key(KC_A)
+        reports = m.keyboard_reports()
+        self.assertEqual(reports[0][0], MOD_LCTRL)  # EP1 mods byte
+        # ID6 structure: ID + 15 bitmap bytes, NO separate mods field
+        self.assertEqual(len(reports[1]), 16)
+        self.assertEqual(reports[1][0], 6)
+        # bitmap bit 0 = usage 0x04 (KC_A), NOT a modifier
+        self.assertEqual(reports[1][1], 0x01)
+
+    def test_system_press_release(self):
+        m = RK84ReportModel()
+        m.set_system(0x01)
+        self.assertEqual(m.system_report(), bytes([1, 0x01]))
+        m.set_system(0)
+        self.assertEqual(m.system_report(), bytes([1, 0x00]))
+
+    def test_consumer_press_release(self):
+        m = RK84ReportModel()
+        m.set_consumer(MEDIA_PLAY_PAUSE)
+        self.assertEqual(m.consumer_report(), bytes([2, 0xCD, 0x00]))
+        m.set_consumer(0)
+        self.assertEqual(m.consumer_report(), bytes([2, 0x00, 0x00]))
 
 
-class GoldenFixtureTests(unittest.TestCase):
-    """Stock-format golden reports (recovered from the original firmware)."""
+class ReferenceFixtureTests(unittest.TestCase):
+    """Hand-computed report bytes for the model (NOT recovered from the
+    stock firmware; those require provenance and are not yet stored)."""
 
-    def test_golden_empty(self):
+    def test_empty_report(self):
         m = RK84ReportModel()
         self.assertEqual(m.boot_report(), bytes(8))
 
-    def test_golden_a_pressed(self):
+    def test_a_pressed(self):
         m = RK84ReportModel()
         m.add_key(KC_A)
         self.assertEqual(
@@ -143,7 +182,7 @@ class GoldenFixtureTests(unittest.TestCase):
             bytes([0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00]),
         )
 
-    def test_golden_shift_a(self):
+    def test_shift_a(self):
         m = RK84ReportModel()
         m.add_mods(MOD_LSHIFT)
         m.add_key(KC_A)
@@ -152,7 +191,7 @@ class GoldenFixtureTests(unittest.TestCase):
             bytes([0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00]),
         )
 
-    def test_golden_media_play(self):
+    def test_media_play(self):
         m = RK84ReportModel()
         m.set_consumer(MEDIA_PLAY_PAUSE)
         self.assertEqual(m.consumer_report(), bytes([0x02, 0xCD, 0x00]))

@@ -1,14 +1,22 @@
-"""Tests for tools/check-usb-descriptors.py."""
+"""Tests for tools/check-usb-descriptors.py.
+
+REQUIRED integration test: fails (not skips) when the recovery
+artifacts are absent (set RK84_RECOVERY_IHX in CI).
+"""
 from __future__ import annotations
 
 import unittest
 
-from . import find_recovery_ihx, run_tool, skip_if_no_build
+from . import (
+    find_recovery_ihx,
+    require_recovery_artifacts,
+    run_tool,
+)
 
 
 class DescriptorVerifierTests(unittest.TestCase):
     def test_recovery_descriptors_pass(self):
-        skip_if_no_build()
+        require_recovery_artifacts()
         ihx = find_recovery_ihx()
         proc = run_tool("check-usb-descriptors.py", str(ihx))
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
@@ -24,9 +32,10 @@ class DescriptorVerifierTests(unittest.TestCase):
             "MPS 16",
             "report ID 5 (ISP Feature): present",
             "report ID 6 (NKRO): present",
-            "NKRO usage range 0x04..0x70: OK",
-            "NKRO report count 120",
-            "System report payload 1 byte: OK",
+            "NKRO usage min 0x04: OK",
+            "NKRO usage max 0x70: OK",
+            "NKRO report count 120: OK",
+            "System report payload 1 bytes: OK",
             "Consumer report payload 2 bytes: OK",
         ):
             self.assertIn(needle, proc.stdout, needle)

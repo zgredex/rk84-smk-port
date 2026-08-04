@@ -1,0 +1,2 @@
+=== USB state: before ===
+--- ioreg ---

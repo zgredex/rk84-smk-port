@@ -6,20 +6,25 @@ on:
   pull_request:
 
 jobs:
+  # Synthetic/unit: runs anywhere, no build artifacts needed.
   test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install toolchain
+      - name: Run synthetic test suite (no artifacts)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y python3
-
-      - name: Run offline test suite
-        run: |
-          python3 -m unittest discover -s tests -t . -v
+          python3 -m unittest -v \
+            tests.test_hexlib \
+            tests.test_hex_bounds \
+            tests.test_matrix_model \
+            tests.test_report_model \
+            tests.test_rgb_model \
+            2>&1 | tee test.log
+          # integration tests must not silently skip in this job; the
+          # artifact tests are NOT run here at all (separate jobs)
+          ! grep -qE '^FAILED|errors=' test.log || exit 1
 
   build:
     runs-on: ubuntu-latest
@@ -79,13 +84,13 @@ jobs:
       - name: Verify USB descriptors
         run: |
           python3 $PWD/tools/check-usb-descriptors.py \
-            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.ihx
+            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex
 
       - name: Build manifest
         run: |
           python3 $PWD/tools/make-manifest.py \
             smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex \
-            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.ihx \
+            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex \
             --build-dir smk/${{ matrix.dir }} \
             --out smk/${{ matrix.dir }}/MANIFEST.txt
           cat smk/${{ matrix.dir }}/MANIFEST.txt
@@ -93,20 +98,93 @@ jobs:
       - name: Recovery invariant (${{ matrix.name }})
         if: matrix.name == 'rk84-recovery'
         run: |
-          # The recovery image must not be able to start the PWM
-          # scheduler: the linked machine code must contain no EPWM0
-          # enable and no PWM00CON 0xC2/0xCA write. This inspects the
-          # final .ihx image, not intermediate .rel files.
-          cd smk
-          ninja -C ${{ matrix.dir }} royalkludge-rk84_default_smk.ihx
           python3 $PWD/tools/check-recovery-no-pwm.py \
-            ${{ matrix.dir }}/royalkludge-rk84_default_smk.ihx
+            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex
 
       - name: Upload firmware (${{ matrix.name }})
         uses: actions/upload-artifact@v4
         with:
           name: UNTESTED-rk84-${{ matrix.name }}-${{ github.sha }}
-          path: smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex
+          path: |
+            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex
+            smk/${{ matrix.dir }}/MANIFEST.txt
+
+  # Integration: recovery + matrix artifact tests with env vars; the
+  # required artifact tests FAIL when env vars are absent.
+  integration:
+    runs-on: ubuntu-latest
+    needs: build
+    env:
+      RK84_RECOVERY_HEX: ${{ github.workspace }}/smk/build-rk84-recovery/royalkludge-rk84_default_smk.hex
+      RK84_RECOVERY_IHX: ${{ github.workspace }}/smk/build-rk84-recovery/royalkludge-rk84_default_smk.hex
+      RK84_MATRIX_HEX: ${{ github.workspace }}/smk/build-rk84-matrix/royalkludge-rk84_default_smk.hex
+      RK84_MATRIX_IHX: ${{ github.workspace }}/smk/build-rk84-matrix/royalkludge-rk84_default_smk.hex
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned SMK
+        run: |
+          git clone https://github.com/carlossless/smk.git smk
+          cd smk
+          git checkout 08f4d0253389551b9ae9aad2464e2d7cacaf662e
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sdcc meson ninja-build python3
+
+      - name: Apply RK84 patches
+        run: |
+          SMK_DIR=$PWD/smk bash $PWD/tools/apply-to-smk.sh
+
+      - name: Build recovery + matrix for integration
+        run: |
+          cd smk
+          meson setup build-rk84-recovery --buildtype=release -Drk84_stage=recovery
+          ninja -C build-rk84-recovery royalkludge-rk84_default_smk.hex
+          meson setup build-rk84-matrix --buildtype=release -Drk84_stage=matrix
+          ninja -C build-rk84-matrix royalkludge-rk84_default_smk.hex
+
+      - name: Run artifact integration tests (fail on skip/absence)
+        run: |
+          python3 -m unittest -v \
+            tests.test_no_pwm \
+            tests.test_usb_descriptors \
+            2>&1 | tee int.log
+          ! grep -q 'skipped=' int.log || { echo "integration tests skipped — FAIL" >&2; exit 1; }
+
+  # Reproducibility: two complete clean builds, byte-identical.
+  reproducibility:
+    runs-on: ubuntu-latest
+    needs: build
+    env:
+      RK84_SMK_TREE: ${{ github.workspace }}/smk
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned SMK
+        run: |
+          git clone https://github.com/carlossless/smk.git smk
+          cd smk
+          git checkout 08f4d0253389551b9ae9aad2464e2d7cacaf662e
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sdcc meson ninja-build python3
+
+      - name: Apply RK84 patches
+        run: |
+          SMK_DIR=$PWD/smk bash $PWD/tools/apply-to-smk.sh
+
+      - name: Two clean builds byte-identical + manifest
+        run: |
+          python3 -m unittest -v \
+            tests.test_reproducibility \
+            2>&1 | tee repro.log
+          ! grep -q 'skipped=' repro.log || { echo "reproducibility tests skipped — FAIL" >&2; exit 1; }
 
   compatibility:
     runs-on: ubuntu-latest
@@ -138,8 +216,8 @@ jobs:
             eyooso-z11_default_smk.hex
           # NOTE: nuphy-air60 does not compile on SDCC 4.6.0 even on
           # pristine upstream (error 110 in its own kb.c + the
-          # required sinowealth-kb-tool). It is excluded until the
-          # upstream toolchain requirements are satisfied.
+          # required sinowealth-kb-tool). Excluded until upstream
+          # toolchain requirements are satisfied.
 
       - name: Validate compat HEXes
         run: |
