@@ -312,7 +312,6 @@ class DescriptorCheck:
         # EP1 (boot 6KRO) and EP2 (NKRO/System/Consumer) are interrupt
         # endpoints; the Feature report (ID 5) travels via HID control
         # transfers on EP0 (bMaxPacketSize0), NOT EP2.
-        ep0_mps = self.device["bMaxPacketSize0"] if self.device else 8
         for rng in self.report_ranges:
             if 6 in self.report_ids(rng) and self.ep_mps.get(2, 64) < 16:
                 self.fail("NKRO (16B) exceeds EP2 MPS")
@@ -321,15 +320,24 @@ class DescriptorCheck:
             rng = self.find_report(rid)
             if rng is not None and size > self.ep_mps.get(2, 64):
                 self.fail(f"{label} report ({size}B) exceeds EP2 MPS")
-        # Feature ID 5: ID + 5-byte payload = 6B via EP0 control path
+        # Feature ID 5: payload MUST be exactly 5 bytes (the ISP
+        # command struct). EP0's 8-byte value is a max packet size,
+        # not a transfer limit — exact payload validation is the
+        # meaningful invariant.
         feat = self.find_report(5)
         if feat is not None:
             payload = self.payload_bytes_for(5)
-            total = 1 + (payload or 0)
-            if total > ep0_mps:
-                self.fail(f"ISP Feature report ({total}B) exceeds EP0 MPS {ep0_mps}")
+            if payload is None:
+                self.fail("ISP Feature report payload not found")
+            elif payload != 5:
+                self.fail(f"ISP Feature payload {payload} != 5 bytes")
             else:
-                print(f"ISP Feature report: {total} bytes via EP0 (MPS {ep0_mps}): OK")
+                total = 1 + payload  # report ID + 5-byte payload = 6
+                ep0_mps = self.device["bMaxPacketSize0"] if self.device else 8
+                if total > ep0_mps:
+                    self.fail(f"ISP Feature report ({total}B) exceeds EP0 MPS {ep0_mps}")
+                else:
+                    print(f"ISP Feature payload 5 bytes (report {total}B via EP0): OK")
 
         return not self.errors
 

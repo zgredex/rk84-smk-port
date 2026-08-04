@@ -82,9 +82,18 @@ set +e
 "$SINOWISP" enter-isp --normal-pid 0x0059 --normal-iface 1 >> "$LOGDIR/enter-isp.log" 2>&1
 enter_rc=$?
 set -e
-sleep 2
 
-if device_present "0x0603" "0x1020"; then
+# poll for the ISP node (up to ~15 s)
+isp_ok=0
+for _ in $(seq 1 30); do
+    if device_present "0x0603" "0x1020"; then
+        isp_ok=1
+        break
+    fi
+    sleep 0.5
+done
+
+if [[ $isp_ok -eq 1 ]]; then
     echo "ISP bootloader (0603:1020): verified on one USB node" | tee -a "$LOGDIR/session.txt"
 else
     if [[ $enter_rc -eq 0 ]]; then
@@ -98,14 +107,24 @@ fi
 
 echo "--- writing stock image ---" | tee -a "$LOGDIR/session.txt"
 "$SINOWISP" write --yes "$BACKUP" | tee "$LOGDIR/write.log"
-sleep 2
 
-if device_present "0x258a" "0x0059"; then
+# poll for the stock node (up to ~15 s)
+echo "--- waiting for stock enumeration (258a:0059) ---" | tee -a "$LOGDIR/session.txt"
+stock_ok=0
+for _ in $(seq 1 30); do
+    if device_present "0x258a" "0x0059"; then
+        stock_ok=1
+        break
+    fi
+    sleep 0.5
+done
+
+if [[ $stock_ok -eq 1 ]]; then
     echo "stock enumeration (258a:0059): verified" | tee -a "$LOGDIR/session.txt"
     echo "--- done. Restore verified." | tee -a "$LOGDIR/session.txt"
     echo "logs: $LOGDIR/"
 else
-    echo "ERROR: stock node 258a:0059 NOT found after write" | tee -a "$LOGDIR/session.txt"
+    echo "ERROR: stock node 258a:0059 NOT found after write (30s)" | tee -a "$LOGDIR/session.txt"
     echo "Replug and re-run restore-stock.sh." >&2
     exit 5
 fi

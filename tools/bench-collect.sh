@@ -106,7 +106,7 @@ if [[ -n "$FLASH_HEX" ]]; then
 
     echo "firmware:     $FLASH_HEX" >> "$OUT/session.txt"
     echo "firmware_sha256: $(shasum -a 256 "$FLASH_HEX" | awk '{print $1}')" >> "$OUT/session.txt"
-    cp "$FLASH_HEX" "$OUT/recovery-flashed.hex"
+    cp "$FLASH_HEX" "$OUT/recovery-requested.hex"
     echo "PREFLIGHT: ALL GATES PASSED" | tee -a "$OUT/session.txt"
 else
     echo "WARNING: no --flash given — collect-only mode (no flashing)" | tee -a "$OUT/session.txt"
@@ -182,18 +182,32 @@ if [[ -n "$FLASH_HEX" ]]; then
     echo "--- write ---" | tee -a "$OUT/session.txt"
     if "$SINOWISP" write --yes "$FLASH_HEX" >> "$OUT/write.log" 2>&1; then
         echo "write: OK" | tee -a "$OUT/session.txt"
+        # copy only after the write succeeded (failed sessions never
+        # contain a file named as though it was flashed)
+        cp "$FLASH_HEX" "$OUT/recovery-flashed.hex"
     else
         echo "write: FAIL (see write.log) — replug and retry (macOS USB wedge)" \
             | tee -a "$OUT/session.txt"
         record_usb "after-write-fail"
         exit 5
     fi
-    sleep 2
 
-    if device_present "0x258a" "0x0059"; then
+    # poll for the normal node (up to ~15 s); replug often takes longer
+    # than a single fixed wait on macOS
+    echo "--- waiting for normal enumeration (258a:0059) ---" | tee -a "$OUT/session.txt"
+    normal_ok=0
+    for _ in $(seq 1 30); do
+        if device_present "0x258a" "0x0059"; then
+            normal_ok=1
+            break
+        fi
+        sleep 0.5
+    done
+
+    if [[ $normal_ok -eq 1 ]]; then
         echo "normal enumeration (258a:0059): verified after write" | tee -a "$OUT/session.txt"
     else
-        echo "ERROR: normal node 258a:0059 NOT found after write" | tee -a "$OUT/session.txt"
+        echo "ERROR: normal node 258a:0059 NOT found after write (30s)" | tee -a "$OUT/session.txt"
         record_usb "after-write-nonormal"
         exit 6
     fi
