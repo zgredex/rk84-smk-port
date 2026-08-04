@@ -271,11 +271,14 @@ class UnstableSampleTests(unittest.TestCase):
         self.assertTrue(m.press_release_balance())
 
     def test_mismatch_preserves_previous_column(self):
-        """Bug-3 model: an invalid scan (0xFF) must preserve the
-        previous stable column value. The C fix in matrix_scan_step()
-        skips the matrix[col] write on 0xFF instead of fabricating
-        ~0xFF = 0x00 (all keys released). The model emulates the
-        preserved state: a held key stays held through the mismatch."""
+        """Bug-3 model: an invalid scan must preserve the previous
+        stable column value. The C fix in matrix_scan_step() skips the
+        matrix[col] write when the scanner returns
+        SMK_MATRIX_SAMPLE_INVALID (0x00 for RK84; valid readings are
+        always 0xC0..0xFF, so 0x00 is unambiguous — the earlier 0xFF
+        sentinel collided with the genuine all-released state). The
+        model emulates the preserved state: a held key stays held
+        through the mismatch."""
         m = RK84MatrixModel()
         m.process(3, 1, True)   # A held, stable
         # unstable sample on the same cell: C keeps previous state

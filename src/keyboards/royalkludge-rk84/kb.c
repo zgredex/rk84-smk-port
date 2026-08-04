@@ -112,10 +112,13 @@ void rk84_usb_reset_hook(void)
     /* Bus reset / unplug / host reset: the host lost all report state.
      * Clear suspend so reports are not dropped. Do NOT schedule the
      * resend yet — wait for SET_CONFIGURATION(1) before transmitting
-     * anything (prevents report traffic during reset enumeration). */
-    rk84_usb_suspended      = 0;
-    rk84_usb_pending_wake   = 0;
-    rk84_usb_wake_signalled = 0;
+     * anything. Also clear any pending resync from an earlier resume:
+     * in the resume -> reset-before-poll sequence a stale bit would
+     * otherwise cause a premature send during enumeration. */
+    rk84_usb_suspended          = 0;
+    rk84_usb_pending_wake       = 0;
+    rk84_usb_wake_signalled     = 0;
+    rk84_usb_resync_needed      = 0;
     rk84_usb_force_extra_resync = 1;
 }
 
