@@ -44,6 +44,9 @@ jobs:
           - name: rk84-matrix
             setup: "-Drk84_stage=matrix"
             dir: build-rk84-matrix
+          - name: rk84-usb
+            setup: "-Drk84_stage=usb"
+            dir: build-rk84-usb
           - name: rk84-rgb
             setup: "-Drk84_stage=rgb"
             dir: build-rk84-rgb
