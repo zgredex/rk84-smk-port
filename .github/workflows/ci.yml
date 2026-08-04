@@ -124,9 +124,9 @@ jobs:
     needs: build
     env:
       RK84_RECOVERY_HEX: ${{ github.workspace }}/smk/build-rk84-recovery/royalkludge-rk84_default_smk.hex
-      RK84_RECOVERY_IHX: ${{ github.workspace }}/smk/build-rk84-recovery/royalkludge-rk84_default_smk.hex
+      RK84_RECOVERY_IHX: ${{ github.workspace }}/smk/build-rk84-recovery/royalkludge-rk84_default_smk.ihx
       RK84_MATRIX_HEX: ${{ github.workspace }}/smk/build-rk84-matrix/royalkludge-rk84_default_smk.hex
-      RK84_MATRIX_IHX: ${{ github.workspace }}/smk/build-rk84-matrix/royalkludge-rk84_default_smk.hex
+      RK84_MATRIX_IHX: ${{ github.workspace }}/smk/build-rk84-matrix/royalkludge-rk84_default_smk.ihx
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -146,13 +146,15 @@ jobs:
         run: |
           SMK_DIR=$PWD/smk bash $PWD/tools/apply-to-smk.sh
 
-      - name: Build recovery + matrix for integration
+      - name: Build recovery + matrix (HEX and IHX)
         run: |
           cd smk
           meson setup build-rk84-recovery --buildtype=release -Drk84_stage=recovery
           ninja -C build-rk84-recovery royalkludge-rk84_default_smk.hex
+          ninja -C build-rk84-recovery royalkludge-rk84_default_smk.ihx
           meson setup build-rk84-matrix --buildtype=release -Drk84_stage=matrix
           ninja -C build-rk84-matrix royalkludge-rk84_default_smk.hex
+          ninja -C build-rk84-matrix royalkludge-rk84_default_smk.ihx
 
       - name: Run artifact integration tests (fail on skip/absence)
         run: |

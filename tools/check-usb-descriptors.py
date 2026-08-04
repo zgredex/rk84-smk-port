@@ -83,6 +83,8 @@ def parse_hid_items(data: bytes) -> list[HidItem]:
     i = 0
     while i < len(data):
         b = data[i]
+        if b == 0xFE:
+            raise ValueError("HID long item (0xFE) not supported")
         i += 1
         tag = b & 0xFC
         size_code = b & 0x03
@@ -166,31 +168,26 @@ class DescriptorCheck:
         ):
             for m in re.finditer(re.escape(marker), self.blob):
                 i = m.start()
-                rng, err = self._slice_collection(i)
+                rng, err = self._slice_collection(i, len(marker))
                 if err:
                     self.fail(f"HID report @0x{i:04X}: {err}")
                 elif rng is not None:
                     self.report_ranges.append(rng)
                     print(f"HID report @0x{i:04X}: {len(rng)} bytes")
 
-    def _slice_collection(self, start: int):
+    def _slice_collection(self, start: int, marker_len: int):
         """Parse HID items from `start`; return (range, None) at the
         matching end-collection, or (None, error). `start` points at
-        the collection marker (05 <page> 09 <usage> A1 01); parsing
-        begins after the opening A1 01 with depth=1."""
-        i = start + 6  # past the 6-byte opening marker
+        the collection marker (which varies in length, e.g. the vendor
+        marker 06 00 FF 09 01 A1 01 is 7 bytes); parsing begins after
+        the opening A1 01 with depth=1. HID long items (0xFE) are
+        REJECTED (consistent with parse_hid_items)."""
+        i = start + marker_len
         depth = 1
         while i < len(self.blob):
             b = self.blob[i]
             if b == 0xFE:
-                # HID long item: 0xFE <len> <tag> <len bytes> <checksum>
-                if i + 3 > len(self.blob):
-                    return None, "truncated long item"
-                long_len = self.blob[i + 1]
-                if i + 3 + long_len + 1 > len(self.blob):
-                    return None, "truncated long item payload"
-                i += 3 + long_len + 1
-                continue
+                return None, "HID long item (0xFE) not supported"
             tag = b & 0xFC
             size_code = b & 0x03
             size = (0, 1, 2, 4)[size_code]
@@ -217,6 +214,28 @@ class DescriptorCheck:
         for rng in self.report_ranges:
             if rid in self.report_ids(rng):
                 return rng
+        return None
+
+    def payload_bytes_for(self, rid: int) -> int | None:
+        """Payload bytes of report `rid`: track the current REPORT_ID
+        and return size*count/8 at the first Main item for that ID."""
+        rng = self.find_report(rid)
+        if rng is None:
+            return None
+        items = parse_hid_items(rng)
+        cur_id = None
+        size_bits = 0
+        accum = 0
+        for it in items:
+            if it.tag == HID_RI_REPORT_ID:
+                cur_id = it.value & 0xFF
+            elif it.tag == HID_RI_REPORT_SIZE:
+                size_bits = it.value
+            elif it.tag == HID_RI_REPORT_COUNT:
+                accum = size_bits * it.value
+            elif it.tag in (HID_RI_INPUT, HID_RI_OUTPUT, HID_RI_FEATURE):
+                if cur_id == rid:
+                    return (accum + 7) // 8
         return None
 
     def checks(self):
@@ -280,31 +299,8 @@ class DescriptorCheck:
                 self.fail("NKRO report size != 1")
 
         # System (ID 1) payload 1 byte, Consumer (ID 2) payload 2 bytes.
-        # Track the current REPORT_ID and accumulate size*count for each
-        # Main item (Input/Output/Feature), per report ID.
-        def payload_bytes_for(rid: int) -> int | None:
-            rng = self.find_report(rid)
-            if rng is None:
-                return None
-            items = parse_hid_items(rng)
-            cur_id = None
-            size_bits = 0
-            accum = 0
-            for it in items:
-                if it.tag == HID_RI_REPORT_ID:
-                    cur_id = it.value & 0xFF
-                elif it.tag == HID_RI_REPORT_SIZE:
-                    size_bits = it.value
-                elif it.tag == HID_RI_REPORT_COUNT:
-                    # count applies to the following Main item
-                    accum = size_bits * it.value
-                elif it.tag in (HID_RI_INPUT, HID_RI_OUTPUT, HID_RI_FEATURE):
-                    if cur_id == rid:
-                        return (accum + 7) // 8
-            return None
-
         for rid, want_bytes, label in ((1, 1, "System"), (2, 2, "Consumer")):
-            got = payload_bytes_for(rid)
+            got = self.payload_bytes_for(rid)
             if got is None:
                 self.fail(f"{label} report (ID {rid}) payload not found")
             elif got == want_bytes:
@@ -313,14 +309,27 @@ class DescriptorCheck:
                 self.fail(f"{label} report payload {got} != {want_bytes} bytes")
 
         # no report exceeds its endpoint MPS
+        # EP1 (boot 6KRO) and EP2 (NKRO/System/Consumer) are interrupt
+        # endpoints; the Feature report (ID 5) travels via HID control
+        # transfers on EP0 (bMaxPacketSize0), NOT EP2.
+        ep0_mps = self.device["bMaxPacketSize0"] if self.device else 8
         for rng in self.report_ranges:
-            # reports have IDs; the NKRO is 16B on EP2(16)
             if 6 in self.report_ids(rng) and self.ep_mps.get(2, 64) < 16:
                 self.fail("NKRO (16B) exceeds EP2 MPS")
-        for rid, label, size in ((5, "ISP Feature", 2), (1, "System", 2), (2, "Consumer", 3)):
+        # System (ID 1): ID + 1 = 2B on EP2; Consumer (ID 2): ID + 2 = 3B
+        for rid, label, size in ((1, "System", 2), (2, "Consumer", 3)):
             rng = self.find_report(rid)
             if rng is not None and size > self.ep_mps.get(2, 64):
                 self.fail(f"{label} report ({size}B) exceeds EP2 MPS")
+        # Feature ID 5: ID + 5-byte payload = 6B via EP0 control path
+        feat = self.find_report(5)
+        if feat is not None:
+            payload = self.payload_bytes_for(5)
+            total = 1 + (payload or 0)
+            if total > ep0_mps:
+                self.fail(f"ISP Feature report ({total}B) exceeds EP0 MPS {ep0_mps}")
+            else:
+                print(f"ISP Feature report: {total} bytes via EP0 (MPS {ep0_mps}): OK")
 
         return not self.errors
 

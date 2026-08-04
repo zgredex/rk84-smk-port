@@ -120,6 +120,18 @@ class HexLibOverlapTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 hex_extent(p)
 
+    def test_parse_hex_rejects_overlap_too(self):
+        """parse_hex must share the same overlap strictness."""
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "x.hex"
+            p.write_text(make([
+                rec(0, 0x0000, b"\x01"),
+                rec(0, 0x0000, b"\x02"),  # duplicate address
+                rec(1, 0, b""),
+            ]))
+            with self.assertRaises(ValueError):
+                parse_hex(p)
+
     def test_duplicate_address_rejected(self):
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "x.hex"

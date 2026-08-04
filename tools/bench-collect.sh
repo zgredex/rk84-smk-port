@@ -79,7 +79,9 @@ if [[ -n "$FLASH_HEX" ]]; then
     MAN_PWM_CA="$(get_field pwm_00ca_count)"
     MAN_VIDPID="$(get_field usb_vid_pid)"
     MAN_PORT="$(get_field port_commit)"
+    MAN_PINNED="$(get_field pinned_smk_commit)"
     MAN_HIGHEST="$(get_field highest_written_address)"
+    CURRENT_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo n/a)"
     ok=1
     [[ -n "$MAN_SHA" ]] || { echo "manifest: hex_sha256 missing" >&2; ok=0; }
     [[ "$MAN_STAGE" == "recovery" ]] || { echo "manifest stage != recovery" >&2; ok=0; }
@@ -88,7 +90,8 @@ if [[ -n "$FLASH_HEX" ]]; then
     [[ "$MAN_PWM_C2" == "0" ]] || { echo "manifest pwm_00c2_count != 0" >&2; ok=0; }
     [[ "$MAN_PWM_CA" == "0" ]] || { echo "manifest pwm_00ca_count != 0" >&2; ok=0; }
     [[ "$MAN_VIDPID" == "258A:0059" ]] || { echo "manifest VID:PID mismatch" >&2; ok=0; }
-    [[ -n "$MAN_PORT" ]] || { echo "manifest port_commit missing" >&2; ok=0; }
+    [[ "$MAN_PORT" == "$CURRENT_COMMIT" ]] || { echo "manifest port_commit ($MAN_PORT) != checked-out ($CURRENT_COMMIT)" >&2; ok=0; }
+    [[ "$MAN_PINNED" == "08f4d0253389551b9ae9aad2464e2d7cacaf662e" ]] || { echo "manifest pinned_smk_commit mismatch" >&2; ok=0; }
     if [[ -n "$MAN_HIGHEST" ]]; then
         if python3 -c "exit(0 if int('$MAN_HIGHEST',16) < 0xBC00 else 1)" 2>/dev/null; then
             :
@@ -124,20 +127,56 @@ record_usb() {
 
 record_usb "before"
 
+# ---------------------------------------------------------------------
+# device_present <vid_hex> <pid_hex> : one USB node has BOTH ids
+# (same-node verification via system_profiler -json)
+# ---------------------------------------------------------------------
+device_present() {
+    local want_vid="$1" want_pid="$2"
+    system_profiler SPUSBDataType -json 2>/dev/null | python3 -c "
+import json, sys
+want_vid, want_pid = '$want_vid', '$want_pid'
+
+def walk(node):
+    if isinstance(node, dict):
+        vid = node.get('vendor_id') or ''
+        pid = node.get('product_id') or ''
+        if vid.lower() == want_vid and pid.lower() == want_pid:
+            return True
+        for v in node.values():
+            if walk(v):
+                return True
+    elif isinstance(node, list):
+        return any(walk(v) for v in node)
+    return False
+
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if walk(data) else 1)
+"
+}
+
 # =====================================================================
 # Flash sequence (only with --flash)
 # =====================================================================
 if [[ -n "$FLASH_HEX" ]]; then
     echo "--- enter-isp ---" | tee -a "$OUT/session.txt"
-    if "$SINOWISP" enter-isp --normal-pid 0x0059 --normal-iface 1 \
-        >> "$OUT/enter-isp.log" 2>&1; then
-        echo "enter_isp: OK" | tee -a "$OUT/session.txt"
+    set +e
+    "$SINOWISP" enter-isp --normal-pid 0x0059 --normal-iface 1 \
+        >> "$OUT/enter-isp.log" 2>&1
+    enter_rc=$?
+    set -e
+    sleep 2
+
+    if device_present "0x0603" "0x1020"; then
+        echo "ISP bootloader (0603:1020): verified on one USB node" | tee -a "$OUT/session.txt"
     else
-        echo "enter_isp: FAIL (see enter-isp.log)" | tee -a "$OUT/session.txt"
+        echo "ERROR: ISP node 0603:1020 NOT found (enter-isp rc=$enter_rc)" | tee -a "$OUT/session.txt"
         record_usb "after-enterisp-fail"
         exit 4
     fi
-    sleep 2
     record_usb "after-enterisp"
 
     echo "--- write ---" | tee -a "$OUT/session.txt"
@@ -150,6 +189,14 @@ if [[ -n "$FLASH_HEX" ]]; then
         exit 5
     fi
     sleep 2
+
+    if device_present "0x258a" "0x0059"; then
+        echo "normal enumeration (258a:0059): verified after write" | tee -a "$OUT/session.txt"
+    else
+        echo "ERROR: normal node 258a:0059 NOT found after write" | tee -a "$OUT/session.txt"
+        record_usb "after-write-nonormal"
+        exit 6
+    fi
     record_usb "after-write"
 fi
 

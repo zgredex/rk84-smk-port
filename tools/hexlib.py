@@ -76,14 +76,26 @@ def iter_records(path: Path) -> list[Record]:
 
 
 def parse_hex(path: Path) -> bytes:
-    """Dense image bytes; data written at absolute addresses."""
+    """Dense image bytes; data written at absolute addresses.
+
+    Overlapping or duplicate data records raise ValueError — every
+    parser that uses parse_hex gets the same strictness as hex_extent.
+    """
     data = bytearray()
+    written: set[int] = set()
     upper = 0
     for rec in iter_records(path):
         if rec.type == 0x00:
             absolute = upper + rec.addr
             if absolute + len(rec.payload) > len(data):
                 data.extend(b"\x00" * (absolute + len(rec.payload) - len(data)))
+            for off in range(len(rec.payload)):
+                addr = absolute + off
+                if addr in written:
+                    raise ValueError(
+                        f"line {rec.line_no}: overlapping data at 0x{addr:04X}"
+                    )
+                written.add(addr)
             data[absolute:absolute + len(rec.payload)] = rec.payload
         elif rec.type == 0x04:
             if len(rec.payload) != 2:
