@@ -64,19 +64,14 @@ jobs:
       - name: Recovery invariant (${{ matrix.name }})
         if: matrix.name == 'rk84-recovery'
         run: |
-          # The recovery image must not enable PWM0: verify no
-          # IEN1 EPWM0-enable path or PWM00CON 0xC2/0xCA write is
-          # reachable. Grep the listing for the scheduler start.
+          # The recovery image must not be able to start the PWM
+          # scheduler: the linked machine code must contain no EPWM0
+          # enable and no PWM00CON 0xC2/0xCA write. This inspects the
+          # final .ihx image, not intermediate .rel files.
           cd smk
           ninja -C ${{ matrix.dir }} royalkludge-rk84_default_smk.ihx
-          # SDCC .ihx is a hex image; check the generated .rel for
-          # the indicators_start object and confirm no EPWM0 path
-          # exists in the recovery build by checking symbols.
-          if grep -q "EPWM0" ${{ matrix.dir }}/royalkludge-rk84_default_smk.ihx.p/indicators.rel; then
-            echo "FAIL: recovery image references EPWM0" >&2
-            exit 1
-          fi
-          echo "OK: recovery image has no EPWM0 reference"
+          python3 $PWD/tools/check-recovery-no-pwm.py \
+            ${{ matrix.dir }}/royalkludge-rk84_default_smk.ihx
 
       - name: Upload firmware (${{ matrix.name }})
         uses: actions/upload-artifact@v4

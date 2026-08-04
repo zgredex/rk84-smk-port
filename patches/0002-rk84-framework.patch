@@ -211,10 +211,10 @@ index 351abba..9562716 100644
 +#define dprintf(...) do { } while (0)
 +#endif
 diff --git a/src/smk/matrix.c b/src/smk/matrix.c
-index b1d81c1..c98a877 100644
+index b1d81c1..63860ab 100644
 --- a/src/smk/matrix.c
 +++ b/src/smk/matrix.c
-@@ -23,6 +23,46 @@ volatile bool                 matrix_updated;
+@@ -23,6 +23,47 @@ volatile bool                 matrix_updated;
  
  uint8_t action_layer;
  
@@ -223,12 +223,13 @@ index b1d81c1..c98a877 100644
 + * the release to a different keycode (or KC_NO) and leave a stuck key.
 + * Held in xdata to spare internal RAM.
 + *
-+ * Generic SMK change: the cache costs MATRIX_ROWS*MATRIX_COLS*2 bytes
-+ * of XRAM on every board (RK84: 6*16*2 = 192 B). Boards with tight
-+ * XRAM budgets can disable it by defining SMK_ACTIVE_KEYCODE_CACHE=0.
++ * OFF by default for upstream boards: the cache costs
++ * MATRIX_ROWS*MATRIX_COLS*2 bytes of XRAM and changes input behavior.
++ * Boards that want the sticky-key fix (e.g. RK84 via the meson board
++ * option) define SMK_ACTIVE_KEYCODE_CACHE=1 explicitly.
 + */
 +#ifndef SMK_ACTIVE_KEYCODE_CACHE
-+#define SMK_ACTIVE_KEYCODE_CACHE 1
++#define SMK_ACTIVE_KEYCODE_CACHE 0
 +#endif
 +
 +#if SMK_ACTIVE_KEYCODE_CACHE
@@ -261,7 +262,7 @@ index b1d81c1..c98a877 100644
  void matrix_init()
  {
      current_step   = 0;
-@@ -33,6 +73,14 @@ void matrix_init()
+@@ -33,6 +74,14 @@ void matrix_init()
          matrix[i]          = 0;
          matrix_previous[i] = 0;
      }
@@ -276,7 +277,7 @@ index b1d81c1..c98a877 100644
  }
  
  matrix_col_t matrix_get_col(uint8_t col)
-@@ -47,17 +95,36 @@ matrix_col_t matrix_can_read()
+@@ -47,17 +96,36 @@ matrix_col_t matrix_can_read()
  
  void process_key_state(uint8_t row, uint8_t col, bool pressed)
  {
@@ -316,7 +317,7 @@ index b1d81c1..c98a877 100644
              action_layer = 0;
          }
  
-@@ -65,14 +132,6 @@ void process_key_state(uint8_t row, uint8_t col, bool pressed)
+@@ -65,14 +133,6 @@ void process_key_state(uint8_t row, uint8_t col, bool pressed)
          return;
      }
  

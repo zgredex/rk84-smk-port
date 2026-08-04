@@ -51,9 +51,10 @@ meson setup build-rk84-dual --buildtype=release \
     -Drk84_stage=matrix -Drk84_dual_reports=true
 ninja -C build-rk84-dual royalkludge-rk84_default_smk.hex
 
-# Validate every image:
-python3 ../rk84-smk-port/tools/check-hex-bounds.py \
-    build-rk84-*/royalkludge-rk84_default_smk.hex
+# Validate every image (bounds + checksum):
+for hexfile in build-rk84-*/royalkludge-rk84_default_smk.hex; do
+    python3 ../rk84-smk-port/tools/check-hex-bounds.py "$hexfile"
+done
 ```
 
 Requires SDCC >= 4.3.0 and the meson/ninja toolchain.

@@ -58,9 +58,16 @@ def iter_hex_addresses(path: Path):
             upper = ((payload[0] << 8) | payload[1]) << 16
         elif record_type == 0x01:
             eof_seen = True
-            return
+            # Continue scanning so data after EOF is caught by the
+            # eof_seen guard above.
+            continue
+        else:
+            # Unknown record types (e.g. 0x05 start linear address)
+            # are ignored for bounds purposes but still checksummed.
+            continue
 
-    raise ValueError(f"{path}: missing EOF record (type 01)")
+    if not eof_seen:
+        raise ValueError(f"{path}: missing EOF record (type 01)")
 
 
 def main() -> int:
