@@ -1,3 +1,0 @@
-backup:      /tmp/fake-stock.bin
-backup md5:  617bfb0b3cba6811f7f28e11cbc41f09
-backup sha256: 00caed09fb54c8ec1b6f8a9b6b777781c4b6237f2d00043309b2cc18528a9135

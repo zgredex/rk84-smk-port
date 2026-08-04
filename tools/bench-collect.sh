@@ -67,24 +67,39 @@ if [[ -n "$FLASH_HEX" ]]; then
     python3 "$SCRIPT_DIR/check-usb-descriptors.py" "$FLASH_HEX" \
         >> "$OUT/preflight.log" 2>&1 || { echo "ERROR: descriptor check failed" >&2; exit 3; }
 
-    # manifest match (if a MANIFEST.txt sits next to the hex)
+    # manifest match (REQUIRED when flashing)
     MANIFEST="$(dirname "$FLASH_HEX")/MANIFEST.txt"
-    if [[ -f "$MANIFEST" ]]; then
-        HEX_SHA="$(shasum -a 256 "$FLASH_HEX" | awk '{print $1}')"
-        MAN_SHA="$(grep '^hex_sha256:' "$MANIFEST" | awk '{print $2}')"
-        MAN_STAGE="$(grep '^stage:' "$MANIFEST" | awk '{print $2}')"
-        MAN_PWM="$(grep '^pwm_epwm0_count:' "$MANIFEST" | awk '{print $2}')"
-        MAN_VIDPID="$(grep '^usb_vid_pid:' "$MANIFEST" | awk '{print $2}')"
-        ok=1
-        [[ "$MAN_STAGE" == "recovery" ]] || { echo "manifest stage != recovery" >&2; ok=0; }
-        [[ "$HEX_SHA" == "$MAN_SHA" ]] || { echo "manifest sha mismatch" >&2; ok=0; }
-        [[ "$MAN_PWM" == "0" ]] || { echo "manifest pwm_epwm0 != 0" >&2; ok=0; }
-        [[ "$MAN_VIDPID" == "258A:0059" ]] || { echo "manifest VID:PID mismatch" >&2; ok=0; }
-        [[ $ok -eq 1 ]] || { echo "ERROR: manifest mismatch" >&2; exit 3; }
-        echo "manifest: verified (stage=recovery, sha match, pwm 0, 258A:0059)" >> "$OUT/session.txt"
+    [[ -f "$MANIFEST" ]] || { echo "ERROR: MANIFEST.txt required next to $FLASH_HEX" >&2; exit 3; }
+    HEX_SHA="$(shasum -a 256 "$FLASH_HEX" | awk '{print $1}')"
+    get_field() { grep "^$1:" "$MANIFEST" | head -1 | awk '{print $2}' || true; }
+    MAN_SHA="$(get_field hex_sha256)"
+    MAN_STAGE="$(get_field stage)"
+    MAN_PWM0="$(get_field pwm_epwm0_count)"
+    MAN_PWM_C2="$(get_field pwm_00c2_count)"
+    MAN_PWM_CA="$(get_field pwm_00ca_count)"
+    MAN_VIDPID="$(get_field usb_vid_pid)"
+    MAN_PORT="$(get_field port_commit)"
+    MAN_HIGHEST="$(get_field highest_written_address)"
+    ok=1
+    [[ -n "$MAN_SHA" ]] || { echo "manifest: hex_sha256 missing" >&2; ok=0; }
+    [[ "$MAN_STAGE" == "recovery" ]] || { echo "manifest stage != recovery" >&2; ok=0; }
+    [[ "$HEX_SHA" == "$MAN_SHA" ]] || { echo "manifest sha mismatch" >&2; ok=0; }
+    [[ "$MAN_PWM0" == "0" ]] || { echo "manifest pwm_epwm0_count != 0" >&2; ok=0; }
+    [[ "$MAN_PWM_C2" == "0" ]] || { echo "manifest pwm_00c2_count != 0" >&2; ok=0; }
+    [[ "$MAN_PWM_CA" == "0" ]] || { echo "manifest pwm_00ca_count != 0" >&2; ok=0; }
+    [[ "$MAN_VIDPID" == "258A:0059" ]] || { echo "manifest VID:PID mismatch" >&2; ok=0; }
+    [[ -n "$MAN_PORT" ]] || { echo "manifest port_commit missing" >&2; ok=0; }
+    if [[ -n "$MAN_HIGHEST" ]]; then
+        if python3 -c "exit(0 if int('$MAN_HIGHEST',16) < 0xBC00 else 1)" 2>/dev/null; then
+            :
+        else
+            echo "manifest highest_written_address >= 0xBC00" >&2; ok=0
+        fi
     else
-        echo "WARNING: no MANIFEST.txt next to hex — skipping manifest gate" >> "$OUT/session.txt"
+        echo "manifest highest_written_address missing" >&2; ok=0
     fi
+    [[ $ok -eq 1 ]] || { echo "ERROR: manifest mismatch (fields above)" >&2; exit 3; }
+    echo "manifest: verified (stage=recovery, sha match, pwm 0/0/0, 258A:0059, commit $MAN_PORT)" >> "$OUT/session.txt"
 
     echo "firmware:     $FLASH_HEX" >> "$OUT/session.txt"
     echo "firmware_sha256: $(shasum -a 256 "$FLASH_HEX" | awk '{print $1}')" >> "$OUT/session.txt"

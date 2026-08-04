@@ -97,18 +97,28 @@ def parse_hex(path: Path) -> bytes:
 
 
 def hex_extent(path: Path) -> tuple[int, int, int]:
-    """(written_byte_count, lowest_written_address, highest_written_address)."""
+    """(written_byte_count, lowest_written_address, highest_written_address).
+
+    written_byte_count counts UNIQUE written addresses; overlapping or
+    duplicate data records raise ValueError (they indicate a malformed
+    image)."""
     upper = 0
     lowest = None
     highest = -1
-    written = 0
+    written: set[int] = set()
     for rec in iter_records(path):
         if rec.type == 0x00:
             absolute = upper + rec.addr
             if lowest is None or absolute < lowest:
                 lowest = absolute
             highest = max(highest, absolute + len(rec.payload) - 1)
-            written += len(rec.payload)
+            for off in range(len(rec.payload)):
+                addr = absolute + off
+                if addr in written:
+                    raise ValueError(
+                        f"line {rec.line_no}: overlapping data at 0x{addr:04X}"
+                    )
+                written.add(addr)
         elif rec.type == 0x04:
             if len(rec.payload) != 2:
                 raise ValueError(f"line {rec.line_no}: bad ELA record")
@@ -119,4 +129,4 @@ def hex_extent(path: Path) -> tuple[int, int, int]:
             upper = ((rec.payload[0] << 8) | rec.payload[1]) << 4
     if lowest is None:
         return 0, 0, -1
-    return written, lowest, highest
+    return len(written), lowest, highest

@@ -155,11 +155,9 @@ class DescriptorCheck:
     def parse_report_ranges(self):
         """Locate report descriptors structurally: each report
         collection starts with 05 <page> 09 <usage> A1 01 and ends at
-        the matching C0 (end collection). Covers keyboard (05 01 09 06),
-        System (05 01 09 80), Consumer (05 0C 09 01) and any others.
-        Handles SMK's layout where report descriptors live after the
-        config/strings and are not contiguous with their HID class
-        descriptors."""
+        the matching end-collection, found by parsing COMPLETE HID
+        items (never byte-by-byte, so payload bytes can't fake a
+        collection). Explicitly rejects HID long items (0xFE)."""
         for marker in (
             b"\x05\x01\x09\x06\xa1\x01",  # keyboard
             b"\x05\x01\x09\x80\xa1\x01",  # system
@@ -168,23 +166,44 @@ class DescriptorCheck:
         ):
             for m in re.finditer(re.escape(marker), self.blob):
                 i = m.start()
-                # find the matching C0 (end collection) — depth counting
-                depth = 1
-                j = i + len(marker)
-                while j < len(self.blob):
-                    b = self.blob[j]
-                    if (b & 0xFC) == 0xA0:  # collection (any type)
-                        depth += 1
-                    elif (b & 0xFC) == 0xC0:  # end collection
-                        depth -= 1
-                        if depth == 0:
-                            rng = self.blob[i:j + 1]
-                            self.report_ranges.append(rng)
-                            print(f"HID report @0x{i:04X}: {len(rng)} bytes")
-                            break
-                    j += 1
-                else:
-                    self.fail(f"HID report @0x{i:04X}: unbalanced collection")
+                rng, err = self._slice_collection(i)
+                if err:
+                    self.fail(f"HID report @0x{i:04X}: {err}")
+                elif rng is not None:
+                    self.report_ranges.append(rng)
+                    print(f"HID report @0x{i:04X}: {len(rng)} bytes")
+
+    def _slice_collection(self, start: int):
+        """Parse HID items from `start`; return (range, None) at the
+        matching end-collection, or (None, error). `start` points at
+        the collection marker (05 <page> 09 <usage> A1 01); parsing
+        begins after the opening A1 01 with depth=1."""
+        i = start + 6  # past the 6-byte opening marker
+        depth = 1
+        while i < len(self.blob):
+            b = self.blob[i]
+            if b == 0xFE:
+                # HID long item: 0xFE <len> <tag> <len bytes> <checksum>
+                if i + 3 > len(self.blob):
+                    return None, "truncated long item"
+                long_len = self.blob[i + 1]
+                if i + 3 + long_len + 1 > len(self.blob):
+                    return None, "truncated long item payload"
+                i += 3 + long_len + 1
+                continue
+            tag = b & 0xFC
+            size_code = b & 0x03
+            size = (0, 1, 2, 4)[size_code]
+            if i + 1 + size > len(self.blob):
+                return None, "truncated item"
+            i += 1 + size
+            if tag == 0xA0:  # Collection
+                depth += 1
+            elif tag == 0xC0:  # End Collection
+                depth -= 1
+                if depth == 0:
+                    return self.blob[start:i], None
+        return None, "unbalanced collection"
 
     # ------------------------------------------------------------------
     def report_ids(self, rng: bytes) -> set[int]:
@@ -261,27 +280,37 @@ class DescriptorCheck:
                 self.fail("NKRO report size != 1")
 
         # System (ID 1) payload 1 byte, Consumer (ID 2) payload 2 bytes.
-        # Compute total report bits from size*count and round up to
-        # bytes (e.g. System: 1 bit x 3 usages = 3 bits -> 1 byte).
-        for rid, want_bytes, label in ((1, 1, "System"), (2, 2, "Consumer")):
+        # Track the current REPORT_ID and accumulate size*count for each
+        # Main item (Input/Output/Feature), per report ID.
+        def payload_bytes_for(rid: int) -> int | None:
             rng = self.find_report(rid)
             if rng is None:
-                continue
+                return None
             items = parse_hid_items(rng)
-            total_bits = 0
+            cur_id = None
             size_bits = 0
+            accum = 0
             for it in items:
-                if it.tag == HID_RI_REPORT_SIZE:
+                if it.tag == HID_RI_REPORT_ID:
+                    cur_id = it.value & 0xFF
+                elif it.tag == HID_RI_REPORT_SIZE:
                     size_bits = it.value
                 elif it.tag == HID_RI_REPORT_COUNT:
-                    total_bits += size_bits * it.value
-            payload_bytes = (total_bits + 7) // 8
-            if payload_bytes == want_bytes:
-                print(f"{label} report payload {payload_bytes} bytes: OK")
+                    # count applies to the following Main item
+                    accum = size_bits * it.value
+                elif it.tag in (HID_RI_INPUT, HID_RI_OUTPUT, HID_RI_FEATURE):
+                    if cur_id == rid:
+                        return (accum + 7) // 8
+            return None
+
+        for rid, want_bytes, label in ((1, 1, "System"), (2, 2, "Consumer")):
+            got = payload_bytes_for(rid)
+            if got is None:
+                self.fail(f"{label} report (ID {rid}) payload not found")
+            elif got == want_bytes:
+                print(f"{label} report payload {got} bytes: OK")
             else:
-                self.fail(
-                    f"{label} report payload {payload_bytes} != {want_bytes} bytes"
-                )
+                self.fail(f"{label} report payload {got} != {want_bytes} bytes")
 
         # no report exceeds its endpoint MPS
         for rng in self.report_ranges:

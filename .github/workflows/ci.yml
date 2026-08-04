@@ -6,14 +6,22 @@ on:
   pull_request:
 
 jobs:
-  # Synthetic/unit: runs anywhere, no build artifacts needed.
+  # Synthetic/unit: runs anywhere, needs only the pinned SMK keycode
+  # definitions (keymap_fixture requires RK84_SMK_TREE).
   test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Run synthetic test suite (no artifacts)
+      - name: Checkout pinned SMK definitions
+        run: |
+          git clone https://github.com/carlossless/smk.git smk-upstream
+          git -C smk-upstream checkout 08f4d0253389551b9ae9aad2464e2d7cacaf662e
+
+      - name: Run synthetic test suite
+        env:
+          RK84_SMK_TREE: ${{ github.workspace }}/smk-upstream
         run: |
           python3 -m unittest -v \
             tests.test_hexlib \
@@ -22,8 +30,6 @@ jobs:
             tests.test_report_model \
             tests.test_rgb_model \
             2>&1 | tee test.log
-          # integration tests must not silently skip in this job; the
-          # artifact tests are NOT run here at all (separate jobs)
           ! grep -qE '^FAILED|errors=' test.log || exit 1
 
   build:
@@ -68,6 +74,7 @@ jobs:
           cd smk
           meson setup ${{ matrix.dir }} --buildtype=release ${{ matrix.setup }}
           ninja -C ${{ matrix.dir }} royalkludge-rk84_default_smk.hex
+          ninja -C ${{ matrix.dir }} royalkludge-rk84_default_smk.ihx
 
       - name: Validate HEX (bounds + checksum, cap 0xBC00)
         run: |
@@ -90,7 +97,7 @@ jobs:
         run: |
           python3 $PWD/tools/make-manifest.py \
             smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex \
-            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex \
+            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.ihx \
             --build-dir smk/${{ matrix.dir }} \
             --out smk/${{ matrix.dir }}/MANIFEST.txt
           cat smk/${{ matrix.dir }}/MANIFEST.txt
@@ -107,6 +114,7 @@ jobs:
           name: UNTESTED-rk84-${{ matrix.name }}-${{ github.sha }}
           path: |
             smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex
+            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.ihx
             smk/${{ matrix.dir }}/MANIFEST.txt
 
   # Integration: recovery + matrix artifact tests with env vars; the

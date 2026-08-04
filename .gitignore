@@ -15,6 +15,10 @@ meson-info/
 # macOS
 .DS_Store
 
+# bench/restore session artifacts (never commit host captures)
+/bench-*/
+/restore-*/
+
 # editor
 *.swp
 .idea/

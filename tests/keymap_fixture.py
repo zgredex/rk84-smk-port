@@ -10,14 +10,27 @@ Usage (host-side):
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 BOARD = REPO / "src" / "keyboards" / "royalkludge-rk84"
 LAYOUT_C = BOARD / "layouts" / "default" / "layout.c"
-KEYCODES_H = REPO / "src" / "smk" / "keycodes.h"  # falls back below
 KBDEF_H = BOARD / "kbdef.h"
+
+# The canonical keycode definitions come from the PINNED SMK tree,
+# never from a patch or a local approximation. Set RK84_SMK_TREE in CI
+# (and locally) to the checked-out pinned SMK repository.
+SMK_TREE = Path(os.environ["RK84_SMK_TREE"])
+KEYCODES_H = SMK_TREE / "src" / "smk" / "keycodes.h"
+
+if not KEYCODES_H.is_file():
+    raise RuntimeError(
+        f"pinned SMK keycodes missing: {KEYCODES_H} "
+        "(set RK84_SMK_TREE to the checked-out "
+        "carlossless/smk@08f4d02 tree)"
+    )
 
 MATRIX_ROWS = 6
 MATRIX_COLS = 16
@@ -31,24 +44,11 @@ def _load_kc_values() -> dict[str, int]:
     pinned SMK keycodes.h (enum members, #define macros, aliases)."""
     values: dict[str, int] = {}
 
-    # try the working-tree copy, then the repo copies in patches/
-    candidates = [
-        KEYCODES_H,
-        Path("/tmp/smk/src/smk/keycodes.h"),
-        Path("/tmp/smk-verify/src/smk/keycodes.h"),
-        REPO / "patches" / "0002-rk84-framework.patch",
-    ]
     text = ""
-    for c in candidates:
-        if c.exists():
-            try:
-                text = c.read_text()
-                break
-            except OSError:
-                continue
-
+    if KEYCODES_H.exists():
+        text = KEYCODES_H.read_text()
     if not text:
-        raise RuntimeError("cannot locate SMK keycodes.h source")
+        raise RuntimeError(f"cannot read SMK keycodes.h: {KEYCODES_H}")
 
     # ---- pass 1: enum members with explicit values and increments ----
     aliases: dict[str, str] = {}

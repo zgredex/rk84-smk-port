@@ -78,11 +78,20 @@ def main() -> int:
 
     # ---- toolchain (required) ----
     sdcc_v = sh(["sdcc", "--version"])
+    meson_v = sh(["meson", "--version"])
+    ninja_v = sh(["ninja", "--version"])
+    missing = []
     if not sdcc_v:
-        raise SystemExit("FAIL: sdcc version unavailable")
+        missing.append("sdcc")
+    if not meson_v:
+        missing.append("meson")
+    if not ninja_v:
+        missing.append("ninja")
+    if missing:
+        raise SystemExit(f"FAIL: toolchain unavailable: {', '.join(missing)}")
     add(f"sdcc:              {sdcc_v.splitlines()[0]}")
-    add(f"meson:             {sh(['meson', '--version'])}")
-    add(f"ninja:             {sh(['ninja', '--version'])}")
+    add(f"meson:             {meson_v}")
+    add(f"ninja:             {ninja_v}")
 
     # ---- stage + options (required) ----
     opts = meson_options(args.build_dir) if args.build_dir else []

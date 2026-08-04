@@ -108,5 +108,40 @@ class HexLibEofStrictnessTests(unittest.TestCase):
                 list(iter_records(p))
 
 
+class HexLibOverlapTests(unittest.TestCase):
+    def test_overlapping_records_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "x.hex"
+            p.write_text(make([
+                rec(0, 0x0000, b"\x01\x02"),
+                rec(0, 0x0001, b"\xFF"),  # overlaps 0x0001
+                rec(1, 0, b""),
+            ]))
+            with self.assertRaises(ValueError):
+                hex_extent(p)
+
+    def test_duplicate_address_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "x.hex"
+            p.write_text(make([
+                rec(0, 0x0000, b"\x01"),
+                rec(0, 0x0000, b"\x02"),  # same address twice
+                rec(1, 0, b""),
+            ]))
+            with self.assertRaises(ValueError):
+                hex_extent(p)
+
+    def test_nonoverlapping_counted_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "x.hex"
+            p.write_text(make([
+                rec(0, 0x0000, b"\x01\x02"),
+                rec(0, 0x0002, b"\x03"),
+                rec(1, 0, b""),
+            ]))
+            written, lowest, highest = hex_extent(p)
+            self.assertEqual((written, lowest, highest), (3, 0, 2))
+
+
 if __name__ == "__main__":
     unittest.main()

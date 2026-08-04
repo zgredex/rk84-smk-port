@@ -62,15 +62,19 @@ Requires SDCC >= 4.3.0 and the meson/ninja toolchain.
 ## Offline verification (no hardware needed)
 
 ```sh
-# 1. Test suite (zero dependencies, stdlib unittest):
-python3 -m unittest discover -s tests -t .
+# 1. Test suite — requires the pinned SMK tree for source-faithful
+#    keymap tests (matrix/report models parse keycodes.h from it):
+git clone https://github.com/carlossless/smk.git smk-upstream
+git -C smk-upstream checkout 08f4d0253389551b9ae9aad2464e2d7cacaf662e
+RK84_SMK_TREE=$PWD/smk-upstream \
+    python3 -m unittest discover -s tests -t .
 
 # 2. Per-image checks:
-python3 tools/check-hex-bounds.py      build/..._smk.hex           # bounds+checksum
-python3 tools/check-recovery-no-pwm.py build/..._smk.ihx           # recovery: no PWM enable
-python3 tools/check-usb-descriptors.py build/..._smk.ihx           # stock USB identity
+python3 tools/check-hex-bounds.py      build/..._smk.hex           # bounds+checksum+overlap
+python3 tools/check-recovery-no-pwm.py build/..._smk.hex           # recovery: no PWM enable
+python3 tools/check-usb-descriptors.py build/..._smk.hex           # structural descriptor parse
 
-# 3. Build manifest (ties artifact to source state):
+# 3. Build manifest (ties artifact to source state; all fields required):
 python3 tools/make-manifest.py build/..._smk.hex build/..._smk.ihx --build-dir build/
 ```
 
@@ -78,30 +82,33 @@ The test suite covers:
 
 - **hexlib (shared parser)**: truncated records, bad checksums,
   missing/malformed EOF, data after EOF, type 0x02/0x04 addressing,
-  ELA/ESA segment bases, dense-image reconstruction, extents
+  ELA/ESA segment bases, dense-image reconstruction, extents,
+  overlapping-record rejection (unique-address counting)
 - **HEX bounds**: limits at 0xBC00/0xEC00/0xEFFC/0xF000
 - **PWM invariant**: no EPWM0 enable / PWM00CON 0xC2/0xCA in recovery
   images, including above-64 KiB addressing
 - **USB descriptors (structural)**: each HID report descriptor is
-  located by its collection marker and parsed item-by-item — VID:PID,
-  bcdDevice, serial index, EP sizes, Feature ID 5, NKRO usage range,
-  System/Consumer payload bytes
+  located by its collection marker and parsed item-by-item (complete
+  items, long items rejected) — VID:PID, bcdDevice, serial index,
+  EP sizes, Feature ID 5, NKRO usage range, System/Consumer payload
+  bytes computed per report ID from size*count on each Main item
 - **Report model**: 6KRO, modifiers, rollover, NKRO first/last usage,
   usage>0x70 rejection, dual-report gate (dual=false sends EP1 only),
   System 2B, Consumer 3B
 - **Matrix/layer model (source-faithful)**: the keymap is parsed from
-  layout.c + keycodes.h (never hand-approximated; A=r3c1, F8=r0c8,
-  Fn=r5c9=MO(1), RCtrl=r5c10); sticky-key sequences, documented
-  scan-order same-frame behavior (col ascending — F8 before Fn emits
-  plain F8), Fn never in report, recovery ignores matrix
+  layout.c + keycodes.h of the PINNED SMK tree (RK84_SMK_TREE; never
+  hand-approximated; A=r3c1, F8=r0c8, Fn=r5c9=MO(1), RCtrl=r5c10);
+  sticky-key sequences, documented scan-order same-frame behavior,
+  Fn never in report, recovery ignores matrix
 - **RGB scheduler**: independent 16-col matrix / 19-phase RGB
   counters, combined schedule repeats at lcm(16,19)=304, framebuffer
   bounds, duty < period, recovery zero-writes
 - **Reproducibility**: two clean builds byte-identical (performed
   live, not comparing pre-built files); manifest consistency
 
-All models mirror the pinned SMK sources; source-parity tests fail if
-the keymap parse drifts from layout.c/keycodes.h.
+Source-parity tests fail loudly when the pinned SMK tree is absent —
+a patch or local approximation never substitutes for the canonical
+keycodes.h.
 
 ## Bench toolkit
 
