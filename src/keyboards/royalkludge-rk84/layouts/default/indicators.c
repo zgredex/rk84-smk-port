@@ -130,6 +130,16 @@ bool indicators_update_step(
         PWM00CON = 0xC2;
     } else {
 #if RK84_RGB_ENABLE
+#if RK84_USB_FULL
+        /* Keep the LEDs dark while the host has not configured the
+         * device or while suspended (PWM0 keeps running: it drives
+         * matrix scan + remote-wake detection). RGB may only drive
+         * the sinks when USB output is allowed. */
+        if (!rk84_usb_outputs_allowed()) {
+            PWM00CON = 0xC2;   /* scheduler active, outputs disabled */
+            goto advance_phase;
+        }
+#endif
         uint8_t row       = (uint8_t)((rgb_phase - 1) / 3);
         uint8_t component = (uint8_t)((rgb_phase - 1) % 3);
         uint8_t base      = (uint8_t)(row * RGB_COLS);
@@ -147,6 +157,7 @@ bool indicators_update_step(
 #endif
     }
 
+advance_phase:
     rgb_phase++;
     if (rgb_phase >= RGB_PHASES) {
         rgb_phase = 0;

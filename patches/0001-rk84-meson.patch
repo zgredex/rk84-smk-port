@@ -1,5 +1,5 @@
 diff --git a/meson.build b/meson.build
-index afa6bfd..b56f45d 100644
+index afa6bfd..2d4ff9e 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -17,11 +17,40 @@ default_options = {
@@ -61,7 +61,7 @@ index afa6bfd..b56f45d 100644
  
  # Host-side generator that bakes per-device LED animation geometry into ROM tables
  # (see utils/led_geometry_gen.c). Compiled once with the host compiler at configure
-@@ -181,6 +212,65 @@ foreach part : parts
+@@ -181,6 +212,74 @@ foreach part : parts
              '-DUSB_PID=@0@'.format(options['product_id']),
          ]
  
@@ -99,8 +99,17 @@ index afa6bfd..b56f45d 100644
 +        endif
 +        if options.get('rk84_recovery_only', false)
 +            cc_args += '-DRK84_RECOVERY_ONLY=1'
++            # Recovery keeps the upstream 1000 ms USB settle (ISP
++            # safety); all other stages boot fast. These MUST be
++            # cc_args, not kbdef.h macros: main.c (framework, shared
++            # by all boards) does not include kbdef.h and selects
++            # boot delay via #ifdef RK84_BOOT_DELAY_MS.
++            cc_args += '-DRK84_BOOT_DELAY_MS=1000'
++            cc_args += '-DRK84_POST_INIT_DELAY_MS=1000'
 +        else
 +            cc_args += '-DRK84_RECOVERY_ONLY=0'
++            cc_args += '-DRK84_BOOT_DELAY_MS=20'
++            cc_args += '-DRK84_POST_INIT_DELAY_MS=20'
 +        endif
 +        if options.get('rk84_usb_full', false)
 +            cc_args += '-DRK84_USB_FULL=1'
@@ -127,7 +136,7 @@ index afa6bfd..b56f45d 100644
          wireless = options.get('wireless', '')
          if wireless == 'bk3632'
              src_main += src_platform_bk3632
-@@ -260,10 +350,16 @@ foreach part : parts
+@@ -260,10 +359,16 @@ foreach part : parts
          )
  
          flash_target_name = '@0@flash'.format(prefix)

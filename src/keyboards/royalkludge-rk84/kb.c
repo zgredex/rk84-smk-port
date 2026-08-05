@@ -102,6 +102,17 @@ void rk84_usb_suspend_hook(void)
     rk84_usb_pending_wake   = 0;
 }
 
+/* Board readiness for USB output: reports AND LED/RGB sinks are only
+ * allowed once the host has configured the device and it is not
+ * suspended. The RGB renderer asks this every PWM phase so the LEDs
+ * go dark during suspend / before SET_CONFIGURATION(1) / after
+ * SET_CONFIGURATION(0), while PWM0 (matrix scan, remote-wake
+ * detection) keeps running. */
+bool rk84_usb_outputs_allowed(void)
+{
+    return rk84_usb_configured && !rk84_usb_suspended;
+}
+
 void rk84_usb_resume_hook(void)
 {
     rk84_usb_suspended    = 0;

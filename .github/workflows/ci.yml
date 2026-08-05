@@ -85,6 +85,19 @@ jobs:
           ninja -C ${{ matrix.dir }} royalkludge-rk84_default_smk.hex
           ninja -C ${{ matrix.dir }} royalkludge-rk84_default_smk.ihx
 
+      - name: Verify compiled delay ABI (${{ matrix.name }})
+        # delay.asm exists only after a real build; run on every RK84
+        # matrix entry (asm content is identical across stages, but the
+        # regression must not silently skip).
+        env:
+          RK84_SMK_TREE: ${{ github.workspace }}/smk
+        run: |
+          python3 -m unittest -v tests.test_delay_abi 2>&1 | tee delay-abi.log
+          ! grep -q 'skipped=' delay-abi.log || {
+            echo "delay ABI test skipped (no compiled delay.asm) — FAIL" >&2
+            exit 1
+          }
+
       - name: Validate HEX (bounds + checksum, cap 0xBC00)
         run: |
           python3 $PWD/tools/check-hex-bounds.py \

@@ -8,12 +8,13 @@ from .rgb_model import (
     INITIAL_BRIGHTNESS,
     INITIAL_SOURCE,
     MATRIX_COLS,
+    PROBE_DUTY,
     PWM_PERIOD,
     RGB_COLS,
     RGB_COMPONENTS,
     RGB_PHASES,
     RGB_ROWS,
-    SAFE_DUTY,
+    PROBE_DUTY,
     SINK_PHASES,
     RGBSchedulerModel,
 )
@@ -90,14 +91,25 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(m.pwm_writes, 0)
         self.assertEqual(m.sink_writes, 0)
 
-    def test_rgb_one_cell_low_duty(self):
+    def test_rgb_three_stripe_probe(self):
+        """The diagnostic: max brightness, raw plane p at column p on
+        every row; all other cells zero."""
         m = RGBSchedulerModel("rgb")
         m.start()
-        self.assertEqual(m.brightness, INITIAL_BRIGHTNESS)
-        self.assertEqual(m.fb[0][0], INITIAL_SOURCE)
+        self.assertEqual(m.brightness, INITIAL_BRIGHTNESS)  # 5
+        for row in range(RGB_ROWS):
+            base = row * RGB_COLS
+            self.assertEqual(m.fb[0][base + 0], INITIAL_SOURCE)
+            self.assertEqual(m.fb[1][base + 1], INITIAL_SOURCE)
+            self.assertEqual(m.fb[2][base + 2], INITIAL_SOURCE)
+            for col in range(RGB_COLS):
+                if col not in (0, 1, 2):
+                    self.assertEqual(m.fb[0][base + col], 0)
+                    self.assertEqual(m.fb[1][base + col], 0)
+                    self.assertEqual(m.fb[2][base + col], 0)
         for _ in range(RGB_PHASES):
             m.step()
-        self.assertLessEqual(m.max_duty_written, SAFE_DUTY)
+        self.assertEqual(m.max_duty_written, PROBE_DUTY)  # 2550
         self.assertEqual(m.invariants(), [])
 
     def test_max_duty_below_period(self):
@@ -140,8 +152,10 @@ class GeometryTests(unittest.TestCase):
     def test_phase_count(self):
         self.assertEqual(RGB_PHASES, 1 + RGB_ROWS * RGB_COMPONENTS)
 
-    def test_safe_duty_value(self):
-        self.assertEqual(SAFE_DUTY, 128)
+    def test_probe_duty_value(self):
+        # max source (255) x max brightness (5) x 2 = 2550 < 2560 period
+        self.assertEqual(PROBE_DUTY, 2550)
+        self.assertLess(PROBE_DUTY, PWM_PERIOD)
 
 
 if __name__ == "__main__":

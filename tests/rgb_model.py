@@ -15,9 +15,9 @@ RGB_COMPONENTS = 3
 RGB_PHASES = 19  # 0 = matrix only, 1..18 = 6 rows x 3 components
 PWM_PERIOD = 0x0A00  # 2560
 BRIGHTNESS_MAX = 5
-INITIAL_BRIGHTNESS = 1
-INITIAL_SOURCE = 64
-SAFE_DUTY = INITIAL_SOURCE * INITIAL_BRIGHTNESS * 2  # 128
+INITIAL_BRIGHTNESS = BRIGHTNESS_MAX  # three-stripe probe: max brightness
+INITIAL_SOURCE = 255                 # probe: max source per lit cell
+PROBE_DUTY = INITIAL_SOURCE * INITIAL_BRIGHTNESS * 2  # 2550
 SINK_PHASES = 18  # 6 rows x 3 components
 
 
@@ -42,7 +42,12 @@ class RGBSchedulerModel:
         self.brightness = INITIAL_BRIGHTNESS
         if self.mode == "rgb":
             self.fb = [[0] * (RGB_ROWS * RGB_COLS) for _ in range(3)]
-            self.fb[0][0] = INITIAL_SOURCE
+            # Three-stripe diagnostic: raw plane p at column p, every row.
+            for row in range(RGB_ROWS):
+                base = row * RGB_COLS
+                self.fb[0][base + 0] = INITIAL_SOURCE
+                self.fb[1][base + 1] = INITIAL_SOURCE
+                self.fb[2][base + 2] = INITIAL_SOURCE
 
     def step(self):
         """One PWM interrupt: scan one matrix column AND advance one

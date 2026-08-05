@@ -318,10 +318,10 @@ index 4244b76..8d79091 100644
  
              CLEAR_EP0_CNT;
 diff --git a/src/platform/sh68f90a/usb.h b/src/platform/sh68f90a/usb.h
-index e5230aa..d333df8 100644
+index e5230aa..1bbc902 100644
 --- a/src/platform/sh68f90a/usb.h
 +++ b/src/platform/sh68f90a/usb.h
-@@ -4,19 +4,53 @@
+@@ -4,19 +4,54 @@
  #include "report.h"
  #include <stdint.h>
  
@@ -369,6 +369,7 @@ index e5230aa..d333df8 100644
 +void rk84_usb_reset_hook(void);
 +void rk84_usb_config_hook(void);
 +void rk84_usb_deconfig_hook(void);
++bool rk84_usb_outputs_allowed(void);
 +bool usb_remote_wakeup_enabled(void);
 +#endif
 +
