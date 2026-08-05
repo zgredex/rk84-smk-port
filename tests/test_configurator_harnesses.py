@@ -69,5 +69,17 @@ class ConfigProtocolHarness(unittest.TestCase):
         )
 
 
+class UsbEp0WrapperHarness(unittest.TestCase):
+    def test_real_usb_wrapper(self):
+        # Audit P5/N4: the REAL usb.c step_ep0_in_xfer() — SET_EP0_CNT
+        # arming, EP0_IN_BUF copy, IN_DATA/RECV_STATUS state mapping,
+        # source/remaining accounting, zero-length + short reads.
+        build_and_run(
+            "rk84-usb-ep0",
+            REPO / "tests" / "c_harness" / "harness_usb_ep0.c",
+            ["-DSMK_DYNAMIC_KEYMAP=1", "-DSMK_CONFIG_PROTOCOL=1"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

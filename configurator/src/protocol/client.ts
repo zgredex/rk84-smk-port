@@ -123,9 +123,16 @@ export class ConfiguratorClient {
         `response payload ${resp.payload.length} bytes exceeds wire cap 24`,
       );
     }
-    // N6 (audit): exact response payload length when the command has a
-    // fixed-size reply — a truncated payload must never be accepted
-    // (e.g. GET_PROTOCOL_INFO silently becoming version 0.0).
+    // P1 (audit): a non-OK status must surface AS THAT STATUS — error
+    // responses have a zero-length payload, so the exact-length check
+    // below would otherwise mask BAD_OBJECT/BAD_OFFSET/BUSY/... with
+    // BAD_LENGTH. Exact lengths apply ONLY to successful responses.
+    if (resp.status !== Status.OK) {
+      throw new ConfiguratorError(resp.status, `cmd 0x${command.toString(16)} failed`);
+    }
+    // N6/P2 (audit): exact response payload length when the command has
+    // a fixed-size reply — a truncated (or, for zero-length commands,
+    // an over-long) payload must never be accepted.
     if (expectedResponseLength !== undefined &&
         resp.payload.length !== expectedResponseLength) {
       throw new ConfiguratorError(
@@ -133,9 +140,6 @@ export class ConfiguratorClient {
         `response payload ${resp.payload.length} bytes; ` +
         `expected ${expectedResponseLength}`,
       );
-    }
-    if (resp.status !== Status.OK) {
-      throw new ConfiguratorError(resp.status, `cmd 0x${command.toString(16)} failed`);
     }
     return resp.payload;
   }
@@ -193,7 +197,10 @@ export class ConfiguratorClient {
     let pos = 0;
     while (pos < data.length) {
       const n = Math.min(24, data.length - pos);
-      await this.transact(Cmd.WRITE_CHUNK, objectId, offset + pos, data.slice(pos, pos + n));
+      await this.transact(
+        Cmd.WRITE_CHUNK, objectId, offset + pos, data.slice(pos, pos + n),
+        Flags.NONE, 0,
+      );
       pos += n;
     }
   }
@@ -210,7 +217,7 @@ export class ConfiguratorClient {
 
   /** Persist the staged profile to flash (A/B atomic). */
   async commitStage(): Promise<void> {
-    await this.transact(Cmd.COMMIT_STAGE);
+    await this.transact(Cmd.COMMIT_STAGE, 0, 0, new Uint8Array(), Flags.NONE, 0);
   }
 
   /** Abort staged changes (live map untouched). */
@@ -220,7 +227,7 @@ export class ConfiguratorClient {
 
   /** Restore compiled defaults (applies live; commit separately). */
   async resetDefaults(): Promise<void> {
-    await this.transact(Cmd.RESET_DEFAULTS);
+    await this.transact(Cmd.RESET_DEFAULTS, 0, 0, new Uint8Array(), Flags.NONE, 0);
   }
 
   // ---- keymap helpers (spec §16) ----

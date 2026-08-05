@@ -78,8 +78,10 @@ test("keymap write + read round-trip (full staging workflow)", async () => {
   map[0] = 0x06; // KC_C
   map[1] = 0x0a; // KC_G
   map[100] = 0x00a5; // KC_SYSTEM_POWER (valid System usage)
-  // preserve the locked Fn default at (5,9): MO(1) = 0x5221
+  // preserve the locked Fn cells: base (5,9) = MO(1) 0x5221; Fn-layer
+  // (5,9) = KC_TRANSPARENT 0x0001 (P4c — matches the compiled model)
   map[5 * 16 + 9] = 0x5221;
+  map[1 * 6 * 16 + 5 * 16 + 9] = 0x0001;
   await c.writeKeymap(map); // BEGIN -> WRITE -> VALIDATE -> APPLY
   const back = await c.readKeymap(2, 6, 16);
   assert.deepEqual([...back], [...map]);
@@ -190,6 +192,73 @@ test("commit with keys held -> KEYS_HELD (future-storage mode)", async () => {
     assert.equal((e as ConfiguratorError).status, Status.KEYS_HELD);
     return true;
   });
+});
+
+test("same txid with different request -> BAD_COMMAND (P3)", async () => {
+  const t = new MockTransport();
+  await t.connect();
+
+  const make = (command: number) =>
+    wrapReport(
+      encodeRequest({
+        command,
+        transactionId: 42, // FIXED txid for both requests
+        flags: 0,
+        objectId: 0,
+        offset: 0,
+        payload: new Uint8Array(),
+      }),
+    );
+
+  const first = decodeResponse(unwrapReport(await t.transact(make(Cmd.GET_PROTOCOL_INFO))));
+  assert.equal(first.status, Status.OK);
+
+  const collision = decodeResponse(unwrapReport(await t.transact(make(Cmd.GET_STATUS))));
+  assert.equal(collision.status, Status.BAD_COMMAND);
+});
+
+test("VALIDATE with wrong object -> BAD_OBJECT, not NOT_STAGED (P4a)", async () => {
+  const { t, c } = fresh();
+  await c.connect();
+  await c.beginStage(ObjectId.KEYMAP);
+  await assert.rejects(
+    () => c.validateStage(0x40 as ObjectId), // RGB_STATIC — wrong object
+    (e: unknown) => {
+      assert.ok(e instanceof ConfiguratorError);
+      assert.equal((e as ConfiguratorError).status, Status.BAD_OBJECT);
+      return true;
+    },
+  );
+  // stage still usable
+  await c.validateStage(ObjectId.KEYMAP);
+  await c.applyStage(ObjectId.KEYMAP);
+  assert.ok(true, "stage intact after wrong-object attempt");
+});
+
+test("READ_OBJECT preserves BAD_OBJECT instead of BAD_LENGTH (P1)", async () => {
+  const { c } = fresh();
+  await c.connect();
+  await assert.rejects(
+    () => c.readObject(0x40 as ObjectId, 0, 4), // RGB_STATIC — not KEYMAP
+    (e: unknown) => {
+      assert.ok(e instanceof ConfiguratorError);
+      assert.equal((e as ConfiguratorError).status, Status.BAD_OBJECT);
+      return true;
+    },
+  );
+});
+
+test("READ_OBJECT preserves BAD_OFFSET instead of BAD_LENGTH (P1)", async () => {
+  const { c } = fresh();
+  await c.connect();
+  await assert.rejects(
+    () => c.readObject(ObjectId.KEYMAP, 384, 4), // offset past end
+    (e: unknown) => {
+      assert.ok(e instanceof ConfiguratorError);
+      assert.equal((e as ConfiguratorError).status, Status.BAD_OFFSET);
+      return true;
+    },
+  );
 });
 
 test("commit in strict M3 mode -> NOT_SUPPORTED (N2)", async () => {

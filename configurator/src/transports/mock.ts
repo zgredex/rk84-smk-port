@@ -86,15 +86,22 @@ export class MockTransport implements DeviceTransport {
     this.store.set(0x80, new Uint8Array(64));
     this.store.set(0x81, new Uint8Array(126)); // led map placeholder
     this.store.set(0x82, new Uint8Array(64)); // diagnostics
-    // Firmware-accurate keymap defaults: the locked Fn cell (5,9) is
-    // MO(1) = 0x5221 on the base layer (N1/R1 — validation compares
-    // against the immutable compiled defaults, not the mutable store).
-    // Other cells stay KC_NO (valid).
+    // Firmware-accurate keymap defaults (P4c: must match the C harness
+    // model): base-layer Fn (5,9) = MO(1) = 0x5221; Fn-layer Fn (5,9) =
+    // KC_TRANSPARENT (0x0001) — the harness models the same. Other
+    // cells stay KC_NO (valid).
     const km = new Uint8Array(OBJECT_SIZES[ObjectId.KEYMAP] ?? 384);
-    const fnIdx = (5 * 16 + 9) * 2; // base layer, (row5, col9)
-    km[fnIdx] = 0x21;
-    km[fnIdx + 1] = 0x52;
-    this.compiledDefaults = compiledDefaults ?? km;
+    const baseFn = (5 * 16 + 9) * 2; // base layer, (row5, col9)
+    km[baseFn] = 0x21;
+    km[baseFn + 1] = 0x52;
+    const fnLayerFn = (1 * 6 * 16 + 5 * 16 + 9) * 2; // Fn layer (row5, col9)
+    km[fnLayerFn] = 0x01; // KC_TRANSPARENT
+    km[fnLayerFn + 1] = 0x00;
+    // P4b: clone the caller's defaults — the "immutable" baseline must
+    // not be externally mutable.
+    this.compiledDefaults = compiledDefaults
+      ? new Uint8Array(compiledDefaults)
+      : km;
     this.store.set(ObjectId.KEYMAP, new Uint8Array(this.compiledDefaults));
   }
 
@@ -110,11 +117,34 @@ export class MockTransport implements DeviceTransport {
     return this.connected;
   }
 
-  /** Direct object access for tests (reads the LIVE store). */
+  /** P4a (audit): firmware staging status precedence — no stage is
+   * NOT_STAGED; an active stage for a DIFFERENT object is BAD_OBJECT;
+   * a matching stage is OK. Mirrors config_protocol.c exactly. */
+  private stageStateFor(objectId: number): Status {
+    if (this.stageObject === null || this.stagedData === null) {
+      return Status.NOT_STAGED;
+    }
+    if (this.stageObject !== objectId) {
+      return Status.BAD_OBJECT;
+    }
+    return Status.OK;
+  }
+
+  /** Direct object access for tests (reads a COPY of the LIVE store —
+   * P4b: never expose the internal mutable array). */
   getObject(id: number): Uint8Array {
     const o = this.store.get(id);
     if (!o) throw new Error(`no object ${id}`);
-    return o;
+    return new Uint8Array(o);
+  }
+
+  /** P4b (audit): immutable compiled default for a cell — the locked
+   * Fn validation compares against THIS, never the mutable live map. */
+  private compiledKeycode(cell: number): number {
+    return (
+      this.compiledDefaults[cell * 2] |
+      (this.compiledDefaults[cell * 2 + 1] << 8)
+    );
   }
 
   /** R1/N1 (audit): firmware-equivalent keymap validation — same SMK
@@ -142,11 +172,9 @@ export class MockTransport implements DeviceTransport {
       const row = Math.floor(pos / 16);
       const col = pos % 16;
       if (row === 5 && col === 9) {
-        // locked Fn: must keep its compiled default (keymaps[][][]
-        // layer-major; the live store holds the default at boot)
-        const live = this.store.get(ObjectId.KEYMAP);
-        const defaultCode = live ? live[cell * 2] | (live[cell * 2 + 1] << 8) : 0;
-        if (code !== defaultCode) return Status.BAD_KEYCODE;
+        // P4b: locked Fn must keep its COMPILED default (immutable) —
+        // never compares against the mutable live map.
+        if (code !== this.compiledKeycode(cell)) return Status.BAD_KEYCODE;
         continue;
       }
       if (!allowed(code)) return Status.BAD_KEYCODE;
@@ -164,16 +192,27 @@ export class MockTransport implements DeviceTransport {
       return this.reply(req, Status.BUSY);
     }
 
-    // M3-04: exact-request cache — identical full report replays the
-    // cached response (no CACHE_OK flag; firmware compares the whole
-    // 31-byte payload). A different request is processed fresh.
+    // P3/N5 (audit, spec §7.6): three-state cache — identical full
+    // request replays; a reused transaction ID with DIFFERENT contents
+    // is a protocol error (BAD_COMMAND); different txid is fresh.
     if (
       this.lastResponse !== null &&
-      this.lastRequest !== null &&
-      this.lastRequest.length === payload.length &&
-      this.lastRequest.every((b, i) => b === payload[i])
+      this.lastRequest !== null
     ) {
-      return this.lastResponse;
+      const identical =
+        this.lastRequest.length === payload.length &&
+        this.lastRequest.every((b, i) => b === payload[i]);
+      if (identical) {
+        return this.lastResponse;
+      }
+      // protocol payload: byte 0 = command, byte 1 = transaction ID
+      const sameTxid = this.lastRequest[1] === payload[1];
+      if (sameTxid) {
+        const collision = this.reply(req, Status.BAD_COMMAND);
+        this.lastRequest = new Uint8Array(payload);
+        this.lastResponse = collision;
+        return collision;
+      }
     }
 
     this.busy = true;
@@ -291,26 +330,24 @@ export class MockTransport implements DeviceTransport {
       }
 
       case Cmd.WRITE_CHUNK: {
-        // R1: stage buffer only — never the live store. The active
-        // check comes FIRST (firmware parity: NOT_STAGED, not
-        // BAD_OBJECT, when no stage is open).
-        if (this.stageObject !== req.objectId || this.stagedData === null) {
-          return fail(Status.NOT_STAGED);
-        }
-        if (req.offset + req.payload.length > this.stagedData.length) {
+        // P4a: keymap-only object gate (firmware parity), then staging
+        // status precedence (NOT_STAGED vs BAD_OBJECT).
+        if (req.objectId !== ObjectId.KEYMAP) return fail(Status.BAD_OBJECT);
+        const stageStatus = this.stageStateFor(req.objectId);
+        if (stageStatus !== Status.OK) return fail(stageStatus);
+        if (req.offset + req.payload.length > this.stagedData!.length) {
           return fail(Status.BAD_OFFSET);
         }
-        this.stagedData.set(req.payload, req.offset);
+        this.stagedData!.set(req.payload, req.offset);
         this.stageValidated = false;
         return ok();
       }
 
       case Cmd.VALIDATE_STAGE: {
-        // R1: real keymap validation, like firmware.
-        if (this.stageObject !== req.objectId || this.stagedData === null) {
-          return fail(Status.NOT_STAGED);
-        }
-        const status = this.validateKeymap(this.stagedData);
+        // P4a: firmware precedence, then real keymap validation.
+        const stageStatus = this.stageStateFor(req.objectId);
+        if (stageStatus !== Status.OK) return fail(stageStatus);
+        const status = this.validateKeymap(this.stagedData!);
         if (status !== Status.OK) return fail(status);
         this.stageValidated = true;
         return ok();
@@ -318,13 +355,12 @@ export class MockTransport implements DeviceTransport {
 
       case Cmd.APPLY_STAGE: {
         if (this.fault === "busy") return fail(Status.BUSY);
-        // active/validated checks FIRST (firmware parity)
-        if (this.stageObject !== req.objectId || this.stagedData === null) {
-          return fail(Status.NOT_STAGED);
-        }
+        // P4a: active/identity checks FIRST (firmware parity)
+        const stageStatus = this.stageStateFor(req.objectId);
+        if (stageStatus !== Status.OK) return fail(stageStatus);
         if (!this.stageValidated) return fail(Status.NOT_STAGED);
         // copy stage to live, then discard the stage
-        this.store.set(req.objectId, new Uint8Array(this.stagedData));
+        this.store.set(req.objectId, new Uint8Array(this.stagedData!));
         this.stageObject = null;
         this.stagedData = null;
         this.stageValidated = false;
