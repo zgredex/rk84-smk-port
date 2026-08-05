@@ -1,8 +1,8 @@
 diff --git a/meson.build b/meson.build
-index afa6bfd..4b93d8a 100644
+index afa6bfd..b56f45d 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -17,11 +17,37 @@ default_options = {
+@@ -17,11 +17,40 @@ default_options = {
      'product_id': '0xdead',
  }
  
@@ -33,14 +33,17 @@ index afa6bfd..4b93d8a 100644
 +        'rk84_stock_reports': true,
 +        'rk84_recovery_only': rk84_stage == 'recovery',
 +        'rk84_rgb': rk84_stage == 'rgb',
-+        'rk84_usb_full': rk84_stage == 'usb',
++        # The final RGB image must RETAIN the proven USB-full runtime
++        # (config gate, suspend/resume, remote wake, resync, lock LEDs).
++        # usb and rgb are no longer mutually exclusive.
++        'rk84_usb_full': rk84_stage == 'usb' or rk84_stage == 'rgb',
 +        'rk84_dual_reports': get_option('rk84_dual_reports'),
 +        'rk84_active_keycode_cache': true,
 +    }],
  ]
  
  # SMK
-@@ -123,6 +149,8 @@ endif
+@@ -123,6 +152,8 @@ endif
  
  if get_option('buildtype') == 'debug'
      cc_base_args += '-DDEBUG=1'
@@ -49,7 +52,7 @@ index afa6bfd..4b93d8a 100644
  endif
  
  sdar_args = ['-rc']
-@@ -130,7 +158,7 @@ sdar_args = ['-rc']
+@@ -130,7 +161,7 @@ sdar_args = ['-rc']
  cc = find_program('sdcc', required : true)
  sdar = find_program('sdar', required : true)
  packihx = find_program('packihx', required : true)
@@ -58,7 +61,7 @@ index afa6bfd..4b93d8a 100644
  
  # Host-side generator that bakes per-device LED animation geometry into ROM tables
  # (see utils/led_geometry_gen.c). Compiled once with the host compiler at configure
-@@ -181,6 +209,65 @@ foreach part : parts
+@@ -181,6 +212,65 @@ foreach part : parts
              '-DUSB_PID=@0@'.format(options['product_id']),
          ]
  
@@ -124,7 +127,7 @@ index afa6bfd..4b93d8a 100644
          wireless = options.get('wireless', '')
          if wireless == 'bk3632'
              src_main += src_platform_bk3632
-@@ -260,10 +347,16 @@ foreach part : parts
+@@ -260,10 +350,16 @@ foreach part : parts
          )
  
          flash_target_name = '@0@flash'.format(prefix)

@@ -125,11 +125,10 @@ enum custom_keycodes {
 /* The USB-full stage is the complete wired keyboard: no RGB, no radio.
  * It is mutually exclusive with recovery (recovery has no scan loop). */
 #if RK84_USB_FULL && RK84_RECOVERY_ONLY
-#    error "USB-full and recovery-only stages are mutually exclusive"
+#    error "Recovery-only image must not enable the USB-full scan loop"
 #endif
-#if RK84_USB_FULL && RK84_RGB_ENABLE
-#    error "USB-full stage must not enable RGB (RGB is a later stage)"
-#endif
+/* NOTE: USB-full + RGB is now the INTENDED configuration (the final
+ * RGB image retains the proven USB runtime). No prohibition here. */
 #if RK84_USB_FULL && RK84_WIRELESS_ENABLE
 #    error "USB-full stage must not enable the radio (wireless is a later stage)"
 #endif

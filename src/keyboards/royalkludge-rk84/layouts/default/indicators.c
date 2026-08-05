@@ -1,7 +1,6 @@
 #include "kbdef.h"
 #include "keyboard.h"
 #include "indicators.h"
-#include "delay.h"
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -61,21 +60,31 @@ void indicators_start(void)
 
 #if RK84_RGB_ENABLE
     /*
-     * Safe RGB bring-up: everything off except ONE logical LED
-     * (row 0, column 0) at low intensity, cycling the three
-     * components so the physical R/G/B order is confirmed before
-     * any full-grid lighting. Duty = 64 * 1 * 2 = 128
-     * (5% of the 2560-count period). Each component ~1.2 s,
-     * looping forever so the sequence is observable at any time.
+     * Static three-stripe diagnostic (WORKING-IMPLEMENTATION §5.1):
+     * one source column per raw plane, on EVERY row, at max
+     * brightness. No timing, no loops — a persistent pattern that
+     * validates all 18 sink phases and identifies raw plane 1/2
+     * colors in a single observation.
      *
-     * ORDER MATTERS: the PWM scheduler (started below) must be
-     * running BEFORE the plane writes, because the per-phase render
-     * (indicators_update_step) only executes while the scheduler
-     * ticks. Writing the plane first and cycling before the start
-     * produces no light.
+     *   column 0 = raw plane 0
+     *   column 1 = raw plane 1
+     *   column 2 = raw plane 2
+     *
+     * Expected: six rows of three illuminated positions near the
+     * left edge. Record plane colors for the measured phase tables.
      */
+    rgb_brightness = RGB_BRIGHTNESS_MAX;
+
+    rgb_fill_static(0, 0, 0);
+    for (uint8_t row = 0; row < RGB_ROWS; row++) {
+        uint8_t base = (uint8_t)(row * RGB_COLS);
+        rgb_plane[0][base + 0] = 255;
+        rgb_plane[1][base + 1] = 255;
+        rgb_plane[2][base + 2] = 255;
+    }
 #else
     /* Matrix-only image: no RGB outputs or framebuffer. */
+    rgb_brightness = 0;
 #endif
 
     /*
@@ -85,23 +94,6 @@ void indicators_start(void)
      */
     PWM00CON = 0xC2;
     IEN1 |= _EPWM0;
-
-#if RK84_RGB_ENABLE
-    /* Component-order cycle, NOW that the scheduler renders.
-     * LOOPS forever so the sequence is observable at any time
-     * (a one-shot probe finishes before the user looks). */
-    while (1) {
-        rgb_fill_static(0, 0, 0);
-        rgb_plane[0][0] = 64;      /* component 0 */
-        delay_ms(4000);
-        rgb_fill_static(0, 0, 0);
-        rgb_plane[1][0] = 64;      /* component 1 */
-        delay_ms(4000);
-        rgb_fill_static(0, 0, 0);
-        rgb_plane[2][0] = 64;      /* component 2 */
-        delay_ms(4000);
-    }
-#endif
 #endif /* RK84_RECOVERY_ONLY */
 }
 

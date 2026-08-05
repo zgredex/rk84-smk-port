@@ -43,6 +43,49 @@ index ceb44f4..2e0639b 100644
  
      while (1) {
          CLR_WDT();
+diff --git a/src/platform/sh68f90a/delay.c b/src/platform/sh68f90a/delay.c
+index ffad1df..5ab1749 100644
+--- a/src/platform/sh68f90a/delay.c
++++ b/src/platform/sh68f90a/delay.c
+@@ -14,11 +14,25 @@
+ // Entry/exit add a fixed ~18+14 cycles, so delay_us(N) takes 24*N + ~8 cycles
+ // for N in [1, 65535] (well under 0.1% error for N >= 100, ~0.3 us absolute).
+ // delay_us(0) is handled and returns immediately.
++//
++// ABI: this is a naked function, so SDCC does not know which registers it
++// clobbers. The delay loop uses R6/R7, and the caller (e.g. delay_ms, which
++// keeps its millisecond counter in R6:R7 across the LCALL) may rely on those
++// registers surviving. Preserve the active register bank's R6/R7 (via ACC so
++// the currently selected bank is used, not assumed bank 0) and ACC itself.
+ void delay_us(uint16_t cnt) __naked
+ {
+     (void)cnt;
+     // clang-format off
+     __asm
++        ; Preserve caller state. Saving through ACC preserves the
++        ; currently selected register bank rather than assuming bank 0.
++        push    acc
++        mov     a, r6
++        push    acc
++        mov     a, r7
++        push    acc
++
+         ; cnt arrives in DPL (low) / DPH (high)
+         mov     r6, dpl                 ; 3c
+         mov     r7, dph                 ; 3c
+@@ -73,6 +87,12 @@ void delay_us(uint16_t cnt) __naked
+         djnz    r6, 00001$              ; 5c/3c
+         djnz    r7, 00001$              ; 5c/3c
+ 00099$:
++        ; Restore caller R7, R6, then original ACC.
++        pop     acc
++        mov     r7, a
++        pop     acc
++        mov     r6, a
++        pop     acc
+         ret                             ; 8c
+     __endasm;
+     // clang-format on
 diff --git a/src/platform/sh68f90a/flash.c b/src/platform/sh68f90a/flash.c
 index ac8b5fb..d58d840 100644
 --- a/src/platform/sh68f90a/flash.c
