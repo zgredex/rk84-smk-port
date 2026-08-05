@@ -513,10 +513,23 @@ index 00f5137..6a70ddd 100644
 + * when unchanged. Also safe after resume. */
 +void host_extra_force_resync(void);
 diff --git a/src/smk/matrix.c b/src/smk/matrix.c
-index b1d81c1..54774bc 100644
+index b1d81c1..fe93513 100644
 --- a/src/smk/matrix.c
 +++ b/src/smk/matrix.c
-@@ -23,6 +23,47 @@ volatile bool                 matrix_updated;
+@@ -8,6 +8,12 @@
+ #include "user_matrix.h"
+ #include "kbdef.h"
+ #include "host.h"
++#include "matrix.h"
++#include "keycodes.h"
++#include "layout.h"
++#if SMK_DYNAMIC_KEYMAP
++#include "dynamic_keymap.h"
++#endif
+ #include <stdlib.h>
+ #include <stdbool.h>
+ 
+@@ -23,6 +29,59 @@ volatile bool                 matrix_updated;
  
  uint8_t action_layer;
  
@@ -558,13 +571,25 @@ index b1d81c1..54774bc 100644
 +        }
 +    }
 +
++#if SMK_DYNAMIC_KEYMAP
++    /* Configurator (M2): a validated runtime map overrides the
++     * compiled defaults when active. 0xFFFF means inactive/out of
++     * range -> keep the compiled resolution above. */
++    {
++        uint16_t dyn = dynamic_keymap_resolve(action_layer, row, col);
++        if (dyn != 0xFFFFu) {
++            qcode = dyn;
++        }
++    }
++#endif
++
 +    return qcode;
 +}
 +
  void matrix_init()
  {
      current_step   = 0;
-@@ -33,6 +74,14 @@ void matrix_init()
+@@ -33,6 +92,20 @@ void matrix_init()
          matrix[i]          = 0;
          matrix_previous[i] = 0;
      }
@@ -576,10 +601,16 @@ index b1d81c1..54774bc 100644
 +        }
 +    }
 +#endif
++
++#if SMK_DYNAMIC_KEYMAP
++    /* Configurator M2 boot fallback: start from compiled defaults.
++     * A stored profile replaces this in M5 (config store load). */
++    dynamic_keymap_load_defaults();
++#endif
  }
  
  matrix_col_t matrix_get_col(uint8_t col)
-@@ -47,17 +96,45 @@ matrix_col_t matrix_can_read()
+@@ -47,17 +120,45 @@ matrix_col_t matrix_can_read()
  
  void process_key_state(uint8_t row, uint8_t col, bool pressed)
  {
@@ -628,7 +659,7 @@ index b1d81c1..54774bc 100644
              action_layer = 0;
          }
  
-@@ -65,14 +142,6 @@ void process_key_state(uint8_t row, uint8_t col, bool pressed)
+@@ -65,14 +166,6 @@ void process_key_state(uint8_t row, uint8_t col, bool pressed)
          return;
      }
  
@@ -643,7 +674,7 @@ index b1d81c1..54774bc 100644
      if (!kb_process_record(qcode, pressed)) {
          return;
      }
-@@ -138,6 +207,34 @@ uint8_t matrix_task()
+@@ -138,6 +231,12 @@ uint8_t matrix_task()
          return matrix_changed;
      }
  
@@ -653,6 +684,21 @@ index b1d81c1..54774bc 100644
 +     * pressing Fn+F8 in one frame emitted plain F8. Layer transitions
 +     * first, then ordinary keys (RK84-only; gated). */
 +#ifdef SMK_LAYER_KEYS_FIRST
+     for (uint8_t col = 0; col < MATRIX_COLS; col++) {
+         __xdata const matrix_col_t current_col = matrix_get_col(col);
+         __xdata const matrix_col_t col_changes = current_col ^ matrix_previous[col];
+@@ -152,7 +251,35 @@ uint8_t matrix_task()
+             if (col_changes & row_mask) {
+                 __xdata const bool key_pressed = current_col & row_mask;
+ 
++                if (IS_QK_MOMENTARY(resolve_keycode(row, col))) {
++                    process_key_state(row, col, key_pressed);
++                }
++            }
++        }
++    }
++#endif /* SMK_LAYER_KEYS_FIRST */
++
 +    for (uint8_t col = 0; col < MATRIX_COLS; col++) {
 +        __xdata const matrix_col_t current_col = matrix_get_col(col);
 +        __xdata const matrix_col_t col_changes = current_col ^ matrix_previous[col];
@@ -667,21 +713,6 @@ index b1d81c1..54774bc 100644
 +            if (col_changes & row_mask) {
 +                __xdata const bool key_pressed = current_col & row_mask;
 +
-+                if (IS_QK_MOMENTARY(resolve_keycode(row, col))) {
-+                    process_key_state(row, col, key_pressed);
-+                }
-+            }
-+        }
-+    }
-+#endif /* SMK_LAYER_KEYS_FIRST */
-+
-     for (uint8_t col = 0; col < MATRIX_COLS; col++) {
-         __xdata const matrix_col_t current_col = matrix_get_col(col);
-         __xdata const matrix_col_t col_changes = current_col ^ matrix_previous[col];
-@@ -152,7 +249,13 @@ uint8_t matrix_task()
-             if (col_changes & row_mask) {
-                 __xdata const bool key_pressed = current_col & row_mask;
- 
 +#ifdef SMK_LAYER_KEYS_FIRST
 +                if (!IS_QK_MOMENTARY(resolve_keycode(row, col))) {
 +                    process_key_state(row, col, key_pressed);
@@ -692,7 +723,7 @@ index b1d81c1..54774bc 100644
              }
          }
  
-@@ -175,7 +278,24 @@ void matrix_scan_step()
+@@ -175,7 +302,24 @@ void matrix_scan_step()
  
          user_matrix_post_scan();
  

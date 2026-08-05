@@ -1,16 +1,18 @@
-/* Host-harness shadow of src/smk/layout.h — the real one pulls the
- * whole SDCC board stack; the RK84_STOCK_REPORTS path of report.c
- * never touches the keymaps table. */
+/* Host-harness shadow of src/smk/layout.h — provides a small compiled
+ * keymaps[] so dynamic_keymap.c's defaults-load has something to copy.
+ * Values are arbitrary-but-distinct so tests can verify the copy. */
 #ifndef HARNESS_LAYOUT_H
 #define HARNESS_LAYOUT_H
 
 #include <stdint.h>
-#include <stdbool.h>
 
-/* MATRIX dims from kbdef.h, inlined to avoid the SDCC chain. */
+#ifndef MATRIX_ROWS
 #define MATRIX_ROWS 6
+#endif
+#ifndef MATRIX_COLS
 #define MATRIX_COLS 16
+#endif
 
 extern const uint16_t keymaps[][MATRIX_ROWS][MATRIX_COLS];
 
-#endif
+#endif /* HARNESS_LAYOUT_H */

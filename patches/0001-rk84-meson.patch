@@ -1,8 +1,8 @@
 diff --git a/meson.build b/meson.build
-index afa6bfd..2d4ff9e 100644
+index afa6bfd..0e3dfed 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -17,11 +17,40 @@ default_options = {
+@@ -17,11 +17,41 @@ default_options = {
      'product_id': '0xdead',
  }
  
@@ -39,11 +39,24 @@ index afa6bfd..2d4ff9e 100644
 +        'rk84_usb_full': rk84_stage == 'usb' or rk84_stage == 'rgb',
 +        'rk84_dual_reports': get_option('rk84_dual_reports'),
 +        'rk84_active_keycode_cache': true,
++        'rk84_dynamic_keymap': get_option('rk84_dynamic_keymap'),
 +    }],
  ]
  
  # SMK
-@@ -123,6 +152,8 @@ endif
+@@ -94,7 +124,10 @@ possible_src_keyboard = [
+     'user_matrix.c',
+     'user_init.c',
+     # 'user_keyboard.c',
+-    'kb.c'
++    'kb.c',
++    # Configurator M2: dynamic keymap (compiled out unless the board
++    # defines SMK_DYNAMIC_KEYMAP via cc_args).
++    'dynamic_keymap.c',
+ ]
+ 
+ possible_src_layout = [
+@@ -123,6 +156,8 @@ endif
  
  if get_option('buildtype') == 'debug'
      cc_base_args += '-DDEBUG=1'
@@ -52,7 +65,7 @@ index afa6bfd..2d4ff9e 100644
  endif
  
  sdar_args = ['-rc']
-@@ -130,7 +161,7 @@ sdar_args = ['-rc']
+@@ -130,7 +165,7 @@ sdar_args = ['-rc']
  cc = find_program('sdcc', required : true)
  sdar = find_program('sdar', required : true)
  packihx = find_program('packihx', required : true)
@@ -61,7 +74,7 @@ index afa6bfd..2d4ff9e 100644
  
  # Host-side generator that bakes per-device LED animation geometry into ROM tables
  # (see utils/led_geometry_gen.c). Compiled once with the host compiler at configure
-@@ -181,6 +212,74 @@ foreach part : parts
+@@ -181,6 +216,79 @@ foreach part : parts
              '-DUSB_PID=@0@'.format(options['product_id']),
          ]
  
@@ -126,17 +139,22 @@ index afa6bfd..2d4ff9e 100644
 +            # ordinary keys in the same scan frame (same-frame Fn+media
 +            # chords resolve as media, not plain keys).
 +            cc_args += '-DSMK_LAYER_KEYS_FIRST=1'
-+            # RK84 scanner sentinel: 0x00 marks a mismatched sample
 +            # (valid readings are always 0xC0..0xFF). The generic
 +            # matrix.c only preserves the previous column for boards
 +            # that define this.
 +            cc_args += '-DSMK_MATRIX_SAMPLE_INVALID=0x00'
 +        endif
++        if options.get('rk84_dynamic_keymap', false) and not options.get('rk84_recovery_only', false)
++            # Configurator M2: runtime-editable keymap (384 B XRAM).
++            # Excluded from recovery: the recovery image stays minimal
++            # (no matrix init, no keymap, no XRAM cost).
++            cc_args += '-DSMK_DYNAMIC_KEYMAP=1'
++        endif
 +
          wireless = options.get('wireless', '')
          if wireless == 'bk3632'
              src_main += src_platform_bk3632
-@@ -260,10 +359,16 @@ foreach part : parts
+@@ -260,10 +368,16 @@ foreach part : parts
          )
  
          flash_target_name = '@0@flash'.format(prefix)
@@ -158,10 +176,10 @@ index afa6bfd..2d4ff9e 100644
          message('target available: @0@, flash: @1@'.format(hex_smk_target_name, flash_target_name))
      endforeach
 diff --git a/meson.options b/meson.options
-index a2af75d..beabdda 100644
+index a2af75d..2871edb 100644
 --- a/meson.options
 +++ b/meson.options
-@@ -1 +1,16 @@
+@@ -1 +1,23 @@
  option('nkro', type : 'feature', value : 'enabled', description: 'NKRO support')
 +
 +option(
@@ -177,4 +195,11 @@ index a2af75d..beabdda 100644
 +    type : 'boolean',
 +    value : false,
 +    description : 'Send simultaneous RK84 EP1 6KRO and EP2 NKRO'
++)
++
++option(
++    'rk84_dynamic_keymap',
++    type : 'boolean',
++    value : false,
++    description : 'Configurator M2: runtime-editable 2-layer keymap in XRAM (384 B)'
 +)
