@@ -5,6 +5,11 @@ Two INDEPENDENT counters advance every PWM interrupt:
   - rgb_phase:           0..18 (RGB_PHASES), wraps every 19
 
 The combined schedule repeats after lcm(16, 19) = 304 interrupts.
+
+PHYSICAL CONFIRMATION (2026-08-05, keyboard returned): the three-stripe
+probe shows RED / GREEN / BLUE from left to right. Plane 0 = RED,
+plane 1 = GREEN, plane 2 = BLUE (col p lit in plane p, every row).
+LED order is RGB — the plane index IS the color component.
 """
 from __future__ import annotations
 
