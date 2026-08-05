@@ -15,10 +15,15 @@ OUT = REPO / "configurator" / "src" / "generated" / "rk84-default-keymap.ts"
 
 
 def smk_tree() -> Path:
-    t = Path(os.environ.get("RK84_SMK_TREE", ""))
-    if not t.exists():
-        raise unittest.SkipTest("RK84_SMK_TREE not set / missing")
-    return t
+    """S1 (audit): an UNSET RK84_SMK_TREE must skip, never resolve to
+    '.' (Path('') == '.' would defeat the check)."""
+    raw = os.environ.get("RK84_SMK_TREE")
+    if not raw:
+        raise unittest.SkipTest("RK84_SMK_TREE not set")
+    tree = Path(raw)
+    if not tree.is_dir():
+        raise unittest.SkipTest(f"RK84_SMK_TREE missing: {tree}")
+    return tree
 
 
 class GenerateConfiguratorKeymapTests(unittest.TestCase):

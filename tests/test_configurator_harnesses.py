@@ -17,10 +17,15 @@ TMP = Path(os.environ.get("TMPDIR", "/tmp"))
 
 
 def smk_tree() -> Path:
-    t = Path(os.environ.get("RK84_SMK_TREE", ""))
-    if not t.exists():
-        raise unittest.SkipTest("RK84_SMK_TREE not set / missing")
-    return t
+    """S1 (audit): an UNSET RK84_SMK_TREE must skip, never resolve to
+    '.' (Path('') == '.' would defeat the check)."""
+    raw = os.environ.get("RK84_SMK_TREE")
+    if not raw:
+        raise unittest.SkipTest("RK84_SMK_TREE not set")
+    tree = Path(raw)
+    if not tree.is_dir():
+        raise unittest.SkipTest(f"RK84_SMK_TREE missing: {tree}")
+    return tree
 
 
 def build_and_run(name: str, harness: str, extra_defs: list[str]):

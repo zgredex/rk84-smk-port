@@ -97,22 +97,23 @@ export class MockTransport implements DeviceTransport {
     this.store.set(0x80, new Uint8Array(64));
     this.store.set(0x81, new Uint8Array(126)); // led map placeholder
     this.store.set(0x82, new Uint8Array(64)); // diagnostics
-    // Q1 (audit): the mock's compiled defaults MUST be the REAL RK84
+    // Q1/S2 (audit): the mock's compiled defaults MUST be the REAL RK84
     // layout (generated from layout.c via keymap_fixture.py), not a
-    // synthetic blank map. The protocol object is exactly 384 bytes.
+    // synthetic blank map. The protocol object is exactly 384 bytes —
+    // validate the SELECTED source uniformly (caller-provided AND the
+    // generated built-in), so a malformed generated constant can never
+    // silently replace the KEYMAP store with a differently sized object.
     const expected = OBJECT_SIZES[ObjectId.KEYMAP];
-    const defaultBytes = encodeKeymap(RK84_DEFAULT_KEYMAP);
-    if (compiledDefaults === undefined) {
-      compiledDefaults = defaultBytes;
-    } else if (compiledDefaults.length !== expected) {
+    const source = compiledDefaults ?? encodeKeymap(RK84_DEFAULT_KEYMAP);
+    if (source.length !== expected) {
       throw new RangeError(
-        `compiled keymap has ${compiledDefaults.length} bytes; ` +
+        `compiled keymap has ${source.length} bytes; ` +
         `expected ${expected}`,
       );
     }
-    // P4b: clone the caller's defaults — the "immutable" baseline must
+    // P4b: clone the selected defaults — the "immutable" baseline must
     // not be externally mutable.
-    this.compiledDefaults = new Uint8Array(compiledDefaults);
+    this.compiledDefaults = new Uint8Array(source);
     this.store.set(ObjectId.KEYMAP, new Uint8Array(this.compiledDefaults));
   }
 

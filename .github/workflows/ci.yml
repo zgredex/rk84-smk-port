@@ -10,6 +10,10 @@ jobs:
   # definitions (keymap_fixture requires RK84_SMK_TREE).
   test:
     runs-on: ubuntu-latest
+    # S1 (audit): job-level env so EVERY test step (synthetic suite +
+    # keymap-generator check) sees the pinned SMK tree.
+    env:
+      RK84_SMK_TREE: ${{ github.workspace }}/smk-upstream
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -24,8 +28,6 @@ jobs:
           SMK_DIR=$PWD/smk-upstream bash $PWD/tools/apply-to-smk.sh
 
       - name: Run synthetic test suite
-        env:
-          RK84_SMK_TREE: ${{ github.workspace }}/smk-upstream
         run: |
           python3 -m unittest -v \
             tests.test_hexlib \
@@ -37,6 +39,7 @@ jobs:
             tests.test_c_harness \
             tests.test_dynamic_keymap_harness \
             tests.test_configurator_harnesses \
+            tests.test_configurator_keymap_gen \
             2>&1 | tee test.log
           ! grep -qE '^FAILED|errors=' test.log || exit 1
 
