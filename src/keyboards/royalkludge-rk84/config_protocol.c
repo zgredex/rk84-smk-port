@@ -44,6 +44,12 @@ static __xdata uint8_t diag_malformed;
 static __xdata uint8_t diag_unknown_cmd;
 static __xdata uint8_t diag_retry;
 
+void config_rx_begin(void)
+{
+    config_rx.pending = 0;
+    config_rx.length = 0;
+}
+
 bool config_rx_append(const uint8_t *pkt, uint8_t len)
 {
     /* ISR-safe: bounded copy, no allocation, no long loops. */
@@ -58,10 +64,14 @@ bool config_rx_append(const uint8_t *pkt, uint8_t len)
         config_rx.data[config_rx.length + i] = pkt[i];
     }
     config_rx.length += len;
-    if (config_rx.length >= CONFIG_MAILBOX_SIZE) {
+    /* M3-05 (audit): pending fires ONLY at exactly 32 bytes. A partial
+     * append returns false — the caller (EP0 OUT IRQ) must not treat
+     * it as a complete report. */
+    if (config_rx.length == CONFIG_MAILBOX_SIZE) {
         config_rx.pending = 1;
+        return true;
     }
-    return true;
+    return false;
 }
 
 bool config_rx_pending(void)
@@ -167,7 +177,13 @@ static void build_response(uint8_t command, uint8_t txid, uint8_t status,
             r[8 + i] = payload[i];
         }
     }
-    config_tx.length = (uint8_t)(8 + payload_len);
+    /* M3-01 (audit): the wire report is ALWAYS the full 32 bytes
+     * (report ID + 31 payload), zero-padded. The TypeScript codec
+     * rejects any other length. */
+    for (uint8_t i = 8 + payload_len; i < CONFIG_MAILBOX_SIZE; i++) {
+        r[i] = 0;
+    }
+    config_tx.length = CONFIG_REPORT_TOTAL_SIZE;
     config_cache_set(r, config_tx.length, config_last_req, CONFIG_REPORT_DATA_SIZE);
 }
 
@@ -222,7 +238,15 @@ static void handle_request(const uint8_t *req)
         }
 
         case CFG_CMD_GET_CAPABILITIES: {
-            __xdata uint8_t c[4] = { 0b00011111, 0x00, 0x00, 0x00 };
+            /* M3-07 (audit): advertise ONLY what is actually
+             * implemented. M3 supports the dynamic keymap + RAM
+             * staging; RGB/VM/macros/wireless are future milestones.
+             * The mask is built from compile-time feature defines so
+             * it stays honest as milestones land. */
+            __xdata uint8_t c[4] = { 0x00, 0x00, 0x00, 0x00 };
+#if SMK_DYNAMIC_KEYMAP
+            c[0] |= 0x01; /* dynamicKeymap */
+#endif
             build_response(command, txid, status, object, offset, c, 4);
             break;
         }
@@ -304,23 +328,26 @@ static void handle_request(const uint8_t *req)
                 build_response(command, txid, CFG_STATUS_BAD_OFFSET, object, offset, NULL, 0);
                 break;
             }
-            /* Mutate the STAGE only; the live map is untouched until a
-             * validated APPLY. Payload is u16 LE: even idx = low byte,
-             * odd idx = high byte. When the low byte of a cell arrives,
-             * validate the complete cell (allowlist + locked Fn). */
+            /* M3-02 (audit): mutate the STAGE buffer ONLY — never the
+             * live map. Payload is u16 LE: even idx = low byte, odd idx
+             * = high byte. A cell is COMPLETE at the odd idx (both bytes
+             * in the stage); validate the completed value there. If an
+             * odd byte arrives without its even byte, it stays staged
+             * but unvalidated until the next chunk or VALIDATE_STAGE. */
             for (uint8_t i = 0; i < plen; i++) {
                 uint16_t idx = (uint16_t)offset + i;
                 config_stage_buf[idx] = payload[i];
-                if (idx & 1u) {
-                    continue; /* high byte: cell completes at the odd idx */
+                if (!(idx & 1u)) {
+                    continue; /* low byte only: cell not complete yet */
                 }
                 uint8_t layer = (uint8_t)(idx / (6u * 16u * 2u));
                 uint32_t rem = idx % (6u * 16u * 2u);
                 uint8_t row = (uint8_t)(rem / (16u * 2u));
                 uint8_t col = (uint8_t)((rem / 2u) % 16u);
-                uint16_t code = (uint16_t)config_stage_buf[idx] |
-                                ((uint16_t)config_stage_buf[idx + 1] << 8);
-                config_status_t st = dynamic_keymap_set(layer, row, col, code);
+                uint16_t code = (uint16_t)config_stage_buf[idx - 1] |
+                                ((uint16_t)config_stage_buf[idx] << 8);
+                config_status_t st = dynamic_keymap_validate_cell(
+                    layer, row, col, code);
                 if (st != CFG_STATUS_OK) {
                     build_response(command, txid, (uint8_t)st, object, offset, NULL, 0);
                     return;
@@ -332,7 +359,8 @@ static void handle_request(const uint8_t *req)
         }
 
         case CFG_CMD_VALIDATE_STAGE: {
-            /* Validate all 192 cells: allowlist + locked positions. */
+            /* Validate all 192 cells: allowlist + locked positions.
+             * Side-effect-free (M3-02): no live map writes. */
             if (!config_stage.active) {
                 build_response(command, txid, CFG_STATUS_NOT_STAGED, object, offset, NULL, 0);
                 break;
@@ -345,14 +373,8 @@ static void handle_request(const uint8_t *req)
                 uint8_t col = (uint8_t)((rem / 2u) % 16u);
                 uint16_t code = (uint16_t)config_stage_buf[idx] |
                                 ((uint16_t)config_stage_buf[idx + 1] << 8);
-                if (dynamic_keymap_is_locked(row, col)) {
-                    uint16_t required = keymaps[layer][row][col];
-                    if (code != required) {
-                        status = CFG_STATUS_BAD_KEYCODE;
-                    }
-                } else if (!dynamic_keymap_keycode_allowed(code)) {
-                    status = CFG_STATUS_BAD_KEYCODE;
-                }
+                status = (uint8_t)dynamic_keymap_validate_cell(
+                    layer, row, col, code);
             }
             if (status == CFG_STATUS_OK) {
                 config_stage.validated = 1;

@@ -107,9 +107,10 @@ def parse_hid_items(data: bytes) -> list[HidItem]:
 
 
 class DescriptorCheck:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, require_config: bool = False):
         self.path = path
         self.blob = parse_hex(path)
+        self.require_config = require_config
         self.errors: list[str] = []
         self.device: dict | None = None
         self.ep_mps: dict[int, int] = {}
@@ -165,6 +166,7 @@ class DescriptorCheck:
             b"\x05\x01\x09\x80\xa1\x01",  # system
             b"\x05\x0c\x09\x01\xa1\x01",  # consumer
             b"\x06\x00\xff\x09\x01\xa1\x01",  # vendor (Feature ID 5)
+            b"\x06\x60\xff\x09\x01\xa1\x01",  # vendor (SMK84 config, ID 8)
         ):
             for m in re.finditer(re.escape(marker), self.blob):
                 i = m.start()
@@ -265,7 +267,8 @@ class DescriptorCheck:
             elif got != want:
                 self.fail(f"EP{ep} MPS {got} != {want}")
 
-        # report presence + structural item checks
+        # report presence + structural item checks (ID 8 is conditional:
+        # only --require-config demands it — see below)
         nkro_rng = None
         for rid, label in ((5, "ISP Feature"), (1, "System"), (2, "Consumer"), (6, "NKRO")):
             rng = self.find_report(rid)
@@ -274,6 +277,20 @@ class DescriptorCheck:
             elif rid == 6:
                 nkro_rng = rng
             print(f"report ID {rid} ({label}): present")
+
+        # M3-06 (audit): the config report ID 8 must be a 31-byte
+        # Feature (report ID + 31 payload = 32 total, EP0 4x8).
+        # Presence is only enforced when --require-config is passed
+        # (the rk84-dynamic build); otherwise the check runs only if
+        # the 0xFF60 collection is present in this binary.
+        cfg_rng = self.find_report(8)
+        if self.require_config and cfg_rng is None:
+            self.fail("report ID 8 (SMK84 config) not found (--require-config)")
+        if cfg_rng is not None:
+            payload = self.payload_bytes_for(8)
+            if payload != 31:
+                self.fail(f"report ID 8 payload {payload} != 31 bytes")
+            print(f"report ID 8 (SMK84 config): {payload}-byte Feature payload OK")
 
         if nkro_rng is not None:
             items = parse_hid_items(nkro_rng)
@@ -345,10 +362,12 @@ class DescriptorCheck:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("hex_file", type=Path)
+    parser.add_argument("--require-config", action="store_true",
+                        help="require report ID 8 (SMK84 config) presence")
     args = parser.parse_args()
 
     try:
-        chk = DescriptorCheck(args.hex_file)
+        chk = DescriptorCheck(args.hex_file, require_config=args.require_config)
     except ValueError as e:
         print(f"FAIL: {args.hex_file}: {e}", file=sys.stderr)
         return 1

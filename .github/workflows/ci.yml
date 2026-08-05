@@ -151,7 +151,16 @@ jobs:
       - name: Verify USB descriptors
         run: |
           python3 $PWD/tools/check-usb-descriptors.py \
-            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex
+            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex \
+            ${{ matrix.name == 'rk84-dynamic' && '--require-config' || '' }}
+
+      - name: Verify config descriptor (M3-06, dynamic build only)
+        if: matrix.name == 'rk84-dynamic'
+        run: |
+          python3 $PWD/tools/check-usb-descriptors.py \
+            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex \
+            --require-config \
+            | grep 'report ID 8 (SMK84 config): 31-byte Feature payload OK'
 
       - name: Build manifest
         run: |

@@ -38,24 +38,85 @@ test("device info", async () => {
   assert.equal(info.maxAnimationBytes, 512);
 });
 
-test("keymap write + read round-trip", async () => {
+test("keymap write + read round-trip (full staging workflow)", async () => {
   const { c } = fresh();
   await c.connect();
   const map = new Uint16Array(2 * 6 * 16);
   for (let i = 0; i < map.length; i++) map[i] = (i * 7 + 3) & 0xffff;
-  await c.writeKeymap(map);
-  await c.applyStage(ObjectId.KEYMAP);
+  await c.writeKeymap(map); // BEGIN -> WRITE -> VALIDATE -> APPLY
   const back = await c.readKeymap(2, 6, 16);
   assert.deepEqual([...back], [...map]);
 });
 
-test("write chunk respects 24-byte limit across object boundary", async () => {
+test("writeChunk without BEGIN -> NOT_STAGED (M3-04 staging)", async () => {
   const { t, c } = fresh();
   await c.connect();
-  const obj = t.getObject(ObjectId.KEYMAP);
-  assert.equal(obj.length, 384);
-  const data = new Uint8Array(300).fill(0x5a);
+  const data = new Uint8Array(8).fill(0x5a);
+  await assert.rejects(
+    () => c.writeChunk(ObjectId.KEYMAP, 0, data),
+    (e: unknown) => {
+      assert.ok(e instanceof ConfiguratorError);
+      assert.equal((e as ConfiguratorError).status, Status.NOT_STAGED);
+      return true;
+    },
+  );
+});
+
+test("applyStage without BEGIN/VALIDATE -> NOT_STAGED (M3-04 staging)", async () => {
+  const { c } = fresh();
+  await c.connect();
+  await assert.rejects(
+    () => c.applyStage(ObjectId.KEYMAP),
+    (e: unknown) => {
+      assert.ok(e instanceof ConfiguratorError);
+      assert.equal((e as ConfiguratorError).status, Status.NOT_STAGED);
+      return true;
+    },
+  );
+});
+
+test("staged write + abort leaves live store untouched (M3-04)", async () => {
+  const { t, c } = fresh();
+  await c.connect();
+  const liveBefore = t.getObject(ObjectId.KEYMAP);
+  assert.equal(liveBefore[0], 0); // zeroed store
+
+  await c.beginStage(ObjectId.KEYMAP);
+  const data = new Uint8Array(4).fill(0x5a);
   await c.writeChunk(ObjectId.KEYMAP, 0, data);
+  await c.abortStage(ObjectId.KEYMAP);
+
+  const liveAfter = t.getObject(ObjectId.KEYMAP);
+  assert.equal(liveAfter[0], 0, "aborted staged write must not reach live store");
+});
+
+test("staged write + validate + apply reaches live store (M3-04)", async () => {
+  const { t, c } = fresh();
+  await c.connect();
+  await c.beginStage(ObjectId.KEYMAP);
+  const data = new Uint8Array(4).fill(0x5a);
+  await c.writeChunk(ObjectId.KEYMAP, 0, data);
+  await c.validateStage(ObjectId.KEYMAP);
+  await c.applyStage(ObjectId.KEYMAP);
+
+  const live = t.getObject(ObjectId.KEYMAP);
+  assert.equal(live[0], 0x5a);
+  assert.equal(live[1], 0x5a);
+});
+
+test("write chunk respects 24-byte limit across object boundary (staged)", async () => {
+  const { t, c } = fresh();
+  await c.connect();
+  assert.equal(t.getObject(ObjectId.KEYMAP).length, 384);
+  const data = new Uint8Array(300).fill(0x5a);
+  await c.beginStage(ObjectId.KEYMAP);
+  await c.writeChunk(ObjectId.KEYMAP, 0, data);
+  // stage is not live yet
+  assert.equal(t.getObject(ObjectId.KEYMAP)[0], 0, "live store untouched before apply");
+  await c.validateStage(ObjectId.KEYMAP);
+  await c.applyStage(ObjectId.KEYMAP);
+  // re-fetch AFTER apply (apply replaces the live array)
+  const obj = t.getObject(ObjectId.KEYMAP);
   assert.deepEqual([...obj.slice(0, 300)], [...data]);
   // untouched tail
   assert.equal(obj[300], 0);

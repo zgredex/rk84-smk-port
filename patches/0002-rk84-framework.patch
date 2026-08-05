@@ -118,7 +118,7 @@ index ac8b5fb..d58d840 100644
  }
  
 diff --git a/src/platform/sh68f90a/usb.c b/src/platform/sh68f90a/usb.c
-index 4244b76..1e750ef 100644
+index 4244b76..ce7866a 100644
 --- a/src/platform/sh68f90a/usb.c
 +++ b/src/platform/sh68f90a/usb.c
 @@ -8,9 +8,27 @@
@@ -271,10 +271,17 @@ index 4244b76..1e750ef 100644
  static void usb_hid_set_report_handler(__xdata struct usb_req_setup *req);
  static void usb_hid_set_idle_handler(__xdata struct usb_req_setup *req);
  static void usb_hid_get_idle_handler();
-@@ -364,6 +404,13 @@ void usb_init()
+@@ -364,6 +404,20 @@ void usb_init()
      ep0_xfer_bytes_left = 0;
      ep0_xfer_src        = 0;
  
++#if SMK_CONFIG_PROTOCOL
++    /* M3-05 (audit): a partial config report must not survive a bus
++     * reset / re-enumeration — it would contaminate the next valid
++     * SET_REPORT. Fresh accumulation on every reset. */
++    config_rx_begin();
++#endif
++
 +#ifdef RK84_USB_HOOKS
 +    /* Bus reset / unplug-replug / host-controller reset: the board's
 +     * suspended state must be cleared or every report would be dropped
@@ -285,7 +292,7 @@ index 4244b76..1e750ef 100644
      USBADDR = 0;
      USBIE1  = (_OVERIE | _SETUPIE | _SOFIA | _RESMIE | _SUSPIE | _PBRSTIE);
      USBIE2  = (_OEP0IE | _IEP0IE);
-@@ -402,14 +449,27 @@ void usb_send_nkro(__xdata report_nkro_t *report)
+@@ -402,14 +456,27 @@ void usb_send_nkro(__xdata report_nkro_t *report)
  void usb_send_extra(__xdata report_extra_t *report)
  {
      uint8_t timeout = 0;
@@ -315,7 +322,7 @@ index 4244b76..1e750ef 100644
      SET_EP2_IN_RDY;
  }
  
-@@ -575,7 +635,7 @@ static void usb_setup_irq()
+@@ -575,7 +642,7 @@ static void usb_setup_irq()
          case (USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_IFACE):
              switch (request) {
                  case USB_HID_REQ_GET_REPORT:
@@ -324,7 +331,7 @@ index 4244b76..1e750ef 100644
                      break;
  
                  case USB_HID_REQ_GET_IDLE:
-@@ -599,11 +659,32 @@ static void usb_setup_irq()
+@@ -599,11 +666,32 @@ static void usb_setup_irq()
      }
  }
  
@@ -358,7 +365,7 @@ index 4244b76..1e750ef 100644
      if (temp_usbif1 != 0x00) {
          if (temp_usbif1 & _SOFIF) {
              USBIF1 &= ~_SOFIF;
-@@ -620,8 +701,14 @@ void usb_interrupt_handler() __interrupt(_INT_USB)
+@@ -620,8 +708,14 @@ void usb_interrupt_handler() __interrupt(_INT_USB)
                  usb_setup_irq();
              } else if (temp_usbif1 & _RESMIF) { // RESMIF
                  USBIF1 &= ~_RESMIF;
@@ -373,7 +380,7 @@ index 4244b76..1e750ef 100644
              } else if (temp_usbif1 & _USBRSTIF) { // BUSRSTIF
                  USBIF1 &= ~_USBRSTIF;
  
-@@ -761,8 +848,19 @@ static void usb_set_configuration_handler(__xdata struct usb_req_setup *req)
+@@ -761,8 +855,19 @@ static void usb_set_configuration_handler(__xdata struct usb_req_setup *req)
  
              if (active_configuration != 0) {
                  usb_device_state = USB_DEVICE_STATE_CONFIGURED;
@@ -393,7 +400,7 @@ index 4244b76..1e750ef 100644
              }
  
              CLEAR_EP0_CNT;
-@@ -991,8 +1089,23 @@ static void usb_get_interface_handler()
+@@ -991,8 +1096,31 @@ static void usb_get_interface_handler()
      SET_EP0_IN_RDY;
  }
  
@@ -402,13 +409,21 @@ index 4244b76..1e750ef 100644
  {
 +    (void)req;
 +#if SMK_CONFIG_PROTOCOL
-+    /* GET_REPORT (report ID 8): return the prepared config response
-+     * (multi-packet IN via step_ep0_in_xfer). */
++    /* GET_REPORT (report ID 8): return the prepared 32-byte config
++     * response. M3-01 (audit): must call step_ep0_in_xfer() BEFORE
++     * arming EP0 IN so the first IN token serves the first 8 bytes of
++     * the response (not stale buffer contents), then set up the state
++     * machine for the remaining 3 packets. */
 +    if (req->wValue == (REPORT_TYPE_FEATURE << 8 | REPORT_ID_SMK84_CONFIG)) {
 +        uint8_t len;
 +        const uint8_t *resp = config_tx_get(&len);
 +        if (resp != NULL && len > 0) {
-+            setup_ep0_in_xfer((uint8_t *)resp, len);
++            uint16_t xfer_len = len;
++            if (req->wLength < xfer_len) {
++                xfer_len = req->wLength; /* host asked for less */
++            }
++            setup_ep0_in_xfer((uint8_t *)resp, xfer_len);
++            step_ep0_in_xfer(); /* load first packet before arming */
 +            usb_ep0_state = USB_EP0_STATE_IN_DATA;
 +            SET_EP0_IN_RDY;
 +            return;
@@ -418,36 +433,41 @@ index 4244b76..1e750ef 100644
      STALL_EP0();
  }
  
-@@ -1012,7 +1125,15 @@ static void usb_hid_set_report_handler(__xdata struct usb_req_setup *req)
+@@ -1012,7 +1140,22 @@ static void usb_hid_set_report_handler(__xdata struct usb_req_setup *req)
                  usb_ep0_state = USB_EP0_STATE_ISP;
                  SET_EP0_OUT_RDY;
              }
 -
 +#if SMK_CONFIG_PROTOCOL
 +            else if ((req->wValue & 0xff) == REPORT_ID_SMK84_CONFIG) {
-+                /* Multi-packet accumulation: each 8-byte OUT packet is
-+                 * appended to the config RX mailbox by the EP0 OUT IRQ
-+                 * until all 32 bytes (report ID + payload) arrive. */
-+                usb_ep0_state = USB_EP0_STATE_CONFIG;
-+                SET_EP0_OUT_RDY;
++                /* M3-05 (audit): accept ONLY a full 32-byte report
++                 * (report ID + 31 payload) to the extra HID interface
++                 * (wIndex == 1). Anything else is stalled. A fresh
++                 * accumulation is started so a partial/aborted previous
++                 * transfer cannot contaminate this one. */
++                if (req->wIndex == 1 && req->wLength == CONFIG_REPORT_TOTAL_SIZE) {
++                    config_rx_begin();
++                    usb_ep0_state = USB_EP0_STATE_CONFIG;
++                    SET_EP0_OUT_RDY;
++                } else {
++                    STALL_EP0();
++                }
 +            }
 +#endif
              break;
  
          default:
-@@ -1077,6 +1198,19 @@ void usb_ep0_out_irq()
+@@ -1077,6 +1220,17 @@ void usb_ep0_out_irq()
          if (EP0_OUT_BUF[0] == 0x05 && EP0_OUT_BUF[1] == 0x75) {
              isp_jump();
          }
 +#if SMK_CONFIG_PROTOCOL
 +    } else if (usb_ep0_state == USB_EP0_STATE_CONFIG) {
-+        /* ISR discipline (spec §6.3): append the 8-byte packet to the
-+         * config RX mailbox; the mailbox sets pending when the full
-+         * 32-byte report has arrived. No parsing, no flash, no long
-+         * loops. */
-+        config_rx_append(EP0_OUT_BUF, EP0_BUF_SIZE);
-+        if (config_rx_pending()) {
-+            usb_ep0_state = 0;
++        /* ISR discipline (spec §6.3 + M3-05): append the packet to the
++         * config RX mailbox; the append reports TRUE only when all 32
++         * bytes have arrived. No parsing, no flash, no long loops. */
++        if (config_rx_append(EP0_OUT_BUF, EP0_BUF_SIZE)) {
++            usb_ep0_state = 0; /* complete: main loop will claim */
 +        }
 +        CLEAR_EP0_CNT;
 +        SET_EP0_IN_RDY;

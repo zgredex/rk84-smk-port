@@ -21,6 +21,8 @@ uint16_t dynamic_keymap_get(uint8_t layer, uint8_t row, uint8_t col);
 bool     dynamic_keymap_is_active(void);
 bool     dynamic_keymap_keycode_allowed(uint16_t keycode);
 bool     dynamic_keymap_is_locked(uint8_t row, uint8_t col);
+config_status_t dynamic_keymap_validate_cell(
+    uint8_t layer, uint8_t row, uint8_t col, uint16_t keycode);
 config_status_t dynamic_keymap_set(
     uint8_t layer, uint8_t row, uint8_t col, uint16_t keycode);
 void dynamic_keymap_load_defaults(void);

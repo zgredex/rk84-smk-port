@@ -86,7 +86,11 @@ bool dynamic_keymap_is_locked(uint8_t row, uint8_t col)
     return row == RK84_FN_LOCKED_ROW && col == RK84_FN_LOCKED_COL;
 }
 
-config_status_t dynamic_keymap_set(
+/* Side-effect-free validation of a single cell (M3-02 audit): checks
+ * bounds, the locked-Fn value, and the allowlist WITHOUT writing the
+ * live map. Used by WRITE_CHUNK/VALIDATE_STAGE so staged edits never
+ * become live before APPLY_STAGE. */
+config_status_t dynamic_keymap_validate_cell(
     uint8_t layer, uint8_t row, uint8_t col, uint16_t keycode)
 {
     if (layer >= RK84_DYNAMIC_LAYERS ||
@@ -95,19 +99,24 @@ config_status_t dynamic_keymap_set(
         return CFG_STATUS_BAD_OFFSET;
     }
     if (dynamic_keymap_is_locked(row, col)) {
-        /* Idempotent round-trip: the locked Fn cell accepts ONLY its
-         * compiled value (layer 0 = MO(1), layer 1 = its fixed value).
-         * A full-map upload therefore succeeds, but remapping Fn is
-         * still impossible. */
         uint16_t required = keymaps[layer][row][col];
         if (keycode != required) {
             return CFG_STATUS_BAD_KEYCODE;
         }
-        dynamic_keymap[layer][row][col] = keycode;
         return CFG_STATUS_OK;
     }
     if (!dynamic_keymap_keycode_allowed(keycode)) {
         return CFG_STATUS_BAD_KEYCODE;
+    }
+    return CFG_STATUS_OK;
+}
+
+config_status_t dynamic_keymap_set(
+    uint8_t layer, uint8_t row, uint8_t col, uint16_t keycode)
+{
+    config_status_t st = dynamic_keymap_validate_cell(layer, row, col, keycode);
+    if (st != CFG_STATUS_OK) {
+        return st;
     }
     dynamic_keymap[layer][row][col] = keycode;
     return CFG_STATUS_OK;

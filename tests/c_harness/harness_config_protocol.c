@@ -266,7 +266,10 @@ static void test_write_out_of_bounds(void)
 static void test_abort_stage(void)
 {
     uint8_t r[32];
-    uint8_t payload[4] = { 0x04, 0x00, 0x05, 0x00 };
+    /* M3-02 regression (audit): write KC_C over the default KC_A, then
+     * abort. The live map must still hold the DEFAULT (KC_A). The old
+     * test wrote KC_A over KC_A and could not detect a live write. */
+    uint8_t payload[4] = { 0x06, 0x00, 0x07, 0x00 }; /* KC_C, KC_D */
     make_request(r, CFG_CMD_BEGIN_STAGE, 14, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     run_request(r);
     make_request(r, CFG_CMD_WRITE_CHUNK, 14, 0, CFG_OBJECT_KEYMAP, 0, payload, 4);
@@ -276,14 +279,65 @@ static void test_abort_stage(void)
     uint8_t *resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "abort stage OK");
 
-    /* after abort, read-back at offset 0 must be the ORIGINAL (0x04
-     * was NOT applied — the map still holds defaults) */
+    /* read back at offset 0: must be the DEFAULT KC_A (0x04), NOT KC_C */
     make_request(r, CFG_CMD_READ_OBJECT, 15, 0, CFG_OBJECT_KEYMAP, 0, NULL, 2);
     resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "read after abort OK");
-    /* defaults were loaded before tests: (0,0,0) = 0x04 from keymaps */
     CHECK(resp[8] == 0x04 && resp[9] == 0x00,
-          "aborted stage did not mutate live map (still KC_A default)");
+          "aborted stage did not mutate live map (KC_C must NOT be live)");
+}
+
+static void test_valid_then_invalid_cell_nothing_live(void)
+{
+    uint8_t r[32];
+    /* Write KC_C (valid) at offset 0, then 0xFFFF (invalid) at offset 2.
+     * Neither may become live: the chunk is rejected, live map keeps
+     * defaults. */
+    uint8_t payload[4] = { 0x06, 0x00, 0xFF, 0xFF };
+    make_request(r, CFG_CMD_BEGIN_STAGE, 21, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    run_request(r);
+    make_request(r, CFG_CMD_WRITE_CHUNK, 21, 0, CFG_OBJECT_KEYMAP, 0, payload, 4);
+    uint8_t *resp = run_request(r);
+    CHECK(resp != NULL && resp[3] == CFG_STATUS_BAD_KEYCODE,
+          "chunk with invalid cell rejected");
+
+    make_request(r, CFG_CMD_READ_OBJECT, 22, 0, CFG_OBJECT_KEYMAP, 0, NULL, 2);
+    resp = run_request(r);
+    CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "read after reject OK");
+    CHECK(resp[8] == 0x04 && resp[9] == 0x00,
+          "valid cell before invalid did NOT become live (still KC_A)");
+}
+
+static void test_split_keycode_across_chunks(void)
+{
+    uint8_t r[32];
+    /* A 16-bit keycode with a nonzero high byte: KC_SYSTEM_POWER = 0x00A5.
+     * Chunk 1: low byte at offset 0. Chunk 2: high byte at offset 1. */
+    uint8_t lo[1] = { 0xA5 };
+    uint8_t hi[1] = { 0x00 };
+    make_request(r, CFG_CMD_BEGIN_STAGE, 23, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    run_request(r);
+    make_request(r, CFG_CMD_WRITE_CHUNK, 23, 0, CFG_OBJECT_KEYMAP, 0, lo, 1);
+    uint8_t *resp = run_request(r);
+    CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "chunk 1 (low byte) OK");
+    make_request(r, CFG_CMD_WRITE_CHUNK, 23, 0, CFG_OBJECT_KEYMAP, 1, hi, 1);
+    resp = run_request(r);
+    CHECK(resp != NULL && resp[3] == CFG_STATUS_OK,
+          "chunk 2 (high byte) validates completed cell OK");
+
+    /* validate + apply, then read back the full keycode */
+    make_request(r, CFG_CMD_VALIDATE_STAGE, 23, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    resp = run_request(r);
+    CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "validate split keycode OK");
+    make_request(r, CFG_CMD_APPLY_STAGE, 23, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    resp = run_request(r);
+    CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "apply split keycode OK");
+
+    make_request(r, CFG_CMD_READ_OBJECT, 24, 0, CFG_OBJECT_KEYMAP, 0, NULL, 2);
+    resp = run_request(r);
+    CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "read split keycode OK");
+    CHECK(resp[8] == 0xA5 && resp[9] == 0x00,
+          "split keycode reassembled (KC_SYSTEM_POWER 0x00A5)");
 }
 
 static void test_commit_not_supported_yet(void)
@@ -340,6 +394,60 @@ static void test_exact_request_cache(void)
           "same txid + different command -> fresh response, not stale");
 }
 
+/* ---- M3-05/M3-06: EP0 transfer state machine (mailbox level) ---- */
+
+static void test_rx_accumulation_partial(void)
+{
+    /* M3-05: append returns FALSE until exactly 32 bytes arrive. */
+    uint8_t pkt[8] = { 0x08, 0, 0, 0, 0, 0, 0, 0 };
+    config_rx_begin();
+    CHECK(config_rx_append(pkt, 8) == false, "first 8B append not complete");
+    CHECK(config_rx_pending() == false, "not pending after 8B");
+    CHECK(config_rx_append(pkt, 8) == false, "16B append not complete");
+    CHECK(config_rx_append(pkt, 8) == false, "24B append not complete");
+    CHECK(config_rx_append(pkt, 8) == true, "32B append completes");
+    CHECK(config_rx_pending() == true, "pending after 32B");
+    config_rx_release();
+}
+
+static void test_rx_reject_wrong_lengths(void)
+{
+    /* M3-05: a transfer of any length other than 32 must not reach
+     * pending. Simulated via the SET_REPORT gate: the firmware stalls
+     * wLength != 32 at the USB layer; at the mailbox layer, oversize
+     * accumulation is reset and short transfers never complete. */
+    uint8_t pkt[8] = { 0x08, 0, 0, 0, 0, 0, 0, 0 };
+    config_rx_begin();
+    config_rx_append(pkt, 8);
+    config_rx_append(pkt, 8);
+    /* abort mid-transfer (e.g. host sends a new SETUP): the mailbox
+     * must be clean for the next request */
+    config_rx_begin();
+    CHECK(config_rx_pending() == false, "abort mid-transfer clears mailbox");
+    /* now a full valid transfer completes */
+    config_rx_append(pkt, 8);
+    config_rx_append(pkt, 8);
+    config_rx_append(pkt, 8);
+    CHECK(config_rx_append(pkt, 8) == true, "full transfer after abort OK");
+    config_rx_release();
+}
+
+static void test_rx_oversize_reset(void)
+{
+    /* M3-05: appending more than 32 bytes total resets the mailbox
+     * (corrupt accumulation) rather than overrunning. */
+    uint8_t pkt[8] = { 0x08, 0, 0, 0, 0, 0, 0, 0 };
+    config_rx_begin();
+    config_rx_append(pkt, 8);
+    config_rx_append(pkt, 8);
+    config_rx_append(pkt, 8);
+    config_rx_append(pkt, 8); /* 32: complete */
+    CHECK(config_rx_pending() == true, "32B pending");
+    /* further append while pending is dropped */
+    CHECK(config_rx_append(pkt, 8) == false, "append while pending dropped");
+    config_rx_release();
+}
+
 int main(void)
 {
     printf("RK84 config protocol host harness\n");
@@ -357,10 +465,15 @@ int main(void)
     test_write_bad_keycode_rejected();
     test_write_out_of_bounds();
     test_abort_stage();
+    test_valid_then_invalid_cell_nothing_live();
+    test_split_keycode_across_chunks();
     test_commit_not_supported_yet();
     test_bootloader_guarded();
     test_diagnostics();
     test_exact_request_cache();
+    test_rx_accumulation_partial();
+    test_rx_reject_wrong_lengths();
+    test_rx_oversize_reset();
     printf("---------------------------------\n");
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

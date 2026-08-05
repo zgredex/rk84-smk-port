@@ -122,9 +122,15 @@ typedef struct {
 
 /* ---- API ------------------------------------------------------------ */
 
+/* Begin a fresh config-report accumulation (M3-05): called from the
+ * SET_REPORT handler on acceptance so a partial/aborted previous
+ * transfer can never contaminate the next one. ISR-safe. */
+void config_rx_begin(void);
+
 /* Called from the USB ISR (usb.c) when the SET_REPORT handler accepts
  * a config report packet; appends up to 8 bytes into the RX mailbox.
- * Returns true when the full 32-byte report has arrived. */
+ * Returns TRUE only when the full 32-byte report has arrived (M3-05:
+ * a partial append returns false, never "complete"). */
 bool config_rx_append(const uint8_t *pkt, uint8_t len);
 
 /* True once a complete report is pending in the RX mailbox. */

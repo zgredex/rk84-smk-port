@@ -63,7 +63,11 @@ export class ConfiguratorClient {
     return this.transport.isConnected();
   }
 
-  /** Run a request/response transaction against the device. */
+  /** Run a request/response transaction against the device.
+   * M3-03 (audit): validates EVERY reply against the request before
+   * accepting status/payload — echoed command + response bit, txid,
+   * object, offset, and payload length. A stale or mis-correlated
+   * response is a protocol error, never silently accepted. */
   private async transact(
     command: Cmd,
     objectId = 0,
@@ -71,9 +75,10 @@ export class ConfiguratorClient {
     payload: Uint8Array = new Uint8Array(0),
     flags = Flags.NONE,
   ): Promise<Uint8Array> {
+    const txid = this.txCounter++ & 0xff;
     const req: RequestPacket = {
       command,
-      transactionId: this.txCounter++ & 0xff,
+      transactionId: txid,
       flags,
       objectId,
       offset,
@@ -82,6 +87,35 @@ export class ConfiguratorClient {
     const report = wrapReport(encodeRequest(req));
     const reply = await this.transport.transact(report);
     const resp = decodeResponse(unwrapReport(reply));
+
+    // identity validation: command echoed with response bit
+    if ((resp.command & 0x7f) !== (command & 0x7f)) {
+      throw new ConfiguratorError(
+        resp.status,
+        `response command 0x${resp.command.toString(16)} != request 0x${command.toString(16)}`,
+      );
+    }
+    if (resp.transactionId !== txid) {
+      throw new ConfiguratorError(
+        resp.status,
+        `response txid ${resp.transactionId} != request txid ${txid}`,
+      );
+    }
+    if (resp.objectId !== objectId) {
+      throw new ConfiguratorError(
+        resp.status,
+        `response object ${resp.objectId} != request object ${objectId}`,
+      );
+    }
+    if (resp.offset !== offset) {
+      throw new ConfiguratorError(
+        resp.status,
+        `response offset ${resp.offset} != request offset ${offset}`,
+      );
+    }
+    if (resp.payload.length > 24) {
+      throw new ConfiguratorError(resp.status, "response payload exceeds 24 bytes");
+    }
     if (resp.status !== Status.OK) {
       throw new ConfiguratorError(resp.status, `cmd 0x${command.toString(16)} failed`);
     }
@@ -128,7 +162,13 @@ export class ConfiguratorClient {
     return out;
   }
 
-  /** Write an object chunk (staging; RAM-only until COMMIT). */
+  /** Begin staging an object: snapshots the live object into the
+   * firmware stage buffer. M3-03: REQUIRED before writeChunk. */
+  async beginStage(objectId: ObjectId): Promise<void> {
+    await this.transact(Cmd.BEGIN_STAGE, objectId);
+  }
+
+  /** Write an object chunk (stage buffer only; never live). */
   async writeChunk(objectId: ObjectId, offset: number, data: Uint8Array): Promise<void> {
     let pos = 0;
     while (pos < data.length) {
@@ -136,6 +176,11 @@ export class ConfiguratorClient {
       await this.transact(Cmd.WRITE_CHUNK, objectId, offset + pos, data.slice(pos, pos + n));
       pos += n;
     }
+  }
+
+  /** Validate the staged object (allowlist + locked cells). */
+  async validateStage(objectId: ObjectId): Promise<void> {
+    await this.transact(Cmd.VALIDATE_STAGE, objectId);
   }
 
   /** Apply staged changes to live RAM (no flash). */
@@ -148,7 +193,7 @@ export class ConfiguratorClient {
     await this.transact(Cmd.COMMIT_STAGE);
   }
 
-  /** Abort staged changes. */
+  /** Abort staged changes (live map untouched). */
   async abortStage(objectId: ObjectId): Promise<void> {
     await this.transact(Cmd.ABORT_STAGE, objectId);
   }
@@ -170,12 +215,17 @@ export class ConfiguratorClient {
     return out;
   }
 
+  /** Full staged keymap upload: BEGIN -> WRITE xN -> VALIDATE -> APPLY.
+   * M3-03 (audit): the correct firmware staging workflow. */
   async writeKeymap(data: Uint16Array): Promise<void> {
     const raw = new Uint8Array(data.length * 2);
     for (let i = 0; i < data.length; i++) {
       raw[i * 2] = data[i] & 0xff;
       raw[i * 2 + 1] = (data[i] >> 8) & 0xff;
     }
+    await this.beginStage(ObjectId.KEYMAP);
     await this.writeChunk(ObjectId.KEYMAP, 0, raw);
+    await this.validateStage(ObjectId.KEYMAP);
+    await this.applyStage(ObjectId.KEYMAP);
   }
 }

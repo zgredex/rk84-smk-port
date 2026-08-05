@@ -5,7 +5,9 @@ artifacts are absent (set RK84_RECOVERY_IHX in CI).
 """
 from __future__ import annotations
 
+import os
 import unittest
+from pathlib import Path
 
 from . import (
     find_recovery_ihx,
@@ -40,6 +42,30 @@ class DescriptorVerifierTests(unittest.TestCase):
         ):
             self.assertIn(needle, proc.stdout, needle)
 
+    def test_config_descriptor_require_flag(self):
+        """M3-06 (audit): --require-config must enforce report ID 8
+        presence + 31-byte payload on the dynamic build, and the
+        recovery build (no config protocol) must FAIL under the flag."""
+        require_recovery_artifacts()
+        ihx = find_recovery_ihx()
+        # recovery has no config protocol -> --require-config fails
+        proc = run_tool("check-usb-descriptors.py", str(ihx),
+                        "--require-config")
+        self.assertNotEqual(proc.returncode, 0,
+                            "recovery must fail --require-config "
+                            "(no report ID 8)")
+
+        # dynamic build: env RK84_DYNAMIC_IHX must point at the
+        # configurator-enabled usb build.
+        dyn = os.environ.get("RK84_DYNAMIC_IHX", "")
+        if not dyn or not Path(dyn).exists():
+            self.skipTest("RK84_DYNAMIC_IHX not set / missing")
+        proc = run_tool("check-usb-descriptors.py", dyn, "--require-config")
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("report ID 8 (SMK84 config): 31-byte Feature payload OK",
+                      proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
+

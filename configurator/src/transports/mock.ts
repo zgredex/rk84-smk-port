@@ -41,7 +41,15 @@ export class MockTransport implements DeviceTransport {
   private store = new Map<number, Uint8Array>();
   private connected = false;
   private busy = false;
-  private lastTxId = -1;
+  /** M3-04 (audit): real staging state — BEGIN snapshots live into
+   * staged, WRITE mutates staged only, VALIDATE checks, APPLY copies
+   * staged to live, ABORT discards. Mirrors firmware config_protocol.c. */
+  private staged = new Map<number, Uint8Array>();
+  private stageActive = false;
+  private stageValidated = false;
+  /** Exact-request cache (audit F6/M3-04): the complete request is
+   * compared, not just the transaction ID. */
+  private lastRequest: Uint8Array | null = null;
   private lastResponse: Uint8Array | null = null;
 
   /** Programmable fault for commit/apply testing. */
@@ -74,7 +82,7 @@ export class MockTransport implements DeviceTransport {
     return this.connected;
   }
 
-  /** Direct object access for tests. */
+  /** Direct object access for tests (reads the LIVE store). */
   getObject(id: number): Uint8Array {
     const o = this.store.get(id);
     if (!o) throw new Error(`no object ${id}`);
@@ -87,15 +95,18 @@ export class MockTransport implements DeviceTransport {
     const req: RequestPacket = decodeRequest(payload);
 
     // one outstanding transaction
-    if (this.busy && !(req.flags & Flags.CACHE_OK)) {
+    if (this.busy) {
       return this.reply(req, Status.BUSY);
     }
 
-    // cache: identical transaction returns cached response
+    // M3-04: exact-request cache — identical full report replays the
+    // cached response (no CACHE_OK flag; firmware compares the whole
+    // 31-byte payload). A different request is processed fresh.
     if (
-      req.transactionId === this.lastTxId &&
       this.lastResponse !== null &&
-      (req.flags & Flags.CACHE_OK)
+      this.lastRequest !== null &&
+      this.lastRequest.length === payload.length &&
+      this.lastRequest.every((b, i) => b === payload[i])
     ) {
       return this.lastResponse;
     }
@@ -105,7 +116,7 @@ export class MockTransport implements DeviceTransport {
       const resp = this.handle(req);
       const out = encodeResponse(resp);
       this.lastResponse = wrapReport(out);
-      this.lastTxId = req.transactionId;
+      this.lastRequest = new Uint8Array(payload);
       return this.lastResponse!;
     } finally {
       this.busy = false;
@@ -174,10 +185,11 @@ export class MockTransport implements DeviceTransport {
       }
 
       case Cmd.GET_CAPABILITIES: {
+        // M3-07 (audit): advertise ONLY what is implemented. M3 =
+        // dynamic keymap + RAM staging. RGB/VM/macros/wireless are
+        // future milestones and must NOT be advertised.
         const c = new Uint8Array(4);
-        c[0] = 0b00011111; // dynamicKeymap | staticRgb | builtIn | customVm | reactive
-        c[1] = 0; // macros off
-        c[2] = 0; // wireless off
+        c[0] = 0x01; // dynamicKeymap only
         return ok(c);
       }
 
@@ -195,28 +207,56 @@ export class MockTransport implements DeviceTransport {
         return ok(obj.slice(start, end));
       }
 
-      case Cmd.BEGIN_STAGE:
+      case Cmd.BEGIN_STAGE: {
+        const live = this.store.get(req.objectId);
+        if (!live) return fail(Status.BAD_OBJECT);
         if (this.rejectUnknownObjects && !this.store.has(req.objectId)) {
           return fail(Status.BAD_OBJECT);
         }
-        return ok();
-
-      case Cmd.WRITE_CHUNK: {
-        if (req.offset + req.payload.length > (this.store.get(req.objectId)?.length ?? 0)) {
-          return fail(Status.BAD_OFFSET);
-        }
-        const obj = this.store.get(req.objectId);
-        if (!obj) return fail(Status.BAD_OBJECT);
-        obj.set(req.payload, req.offset);
+        // M3-04: snapshot the LIVE object into the stage buffer.
+        this.staged.set(req.objectId, new Uint8Array(live));
+        this.stageActive = true;
+        this.stageValidated = false;
         return ok();
       }
 
-      case Cmd.VALIDATE_STAGE:
+      case Cmd.WRITE_CHUNK: {
+        // M3-04: stage buffer only — never the live store. The
+        // active check comes FIRST (firmware parity: NOT_STAGED, not
+        // BAD_OBJECT, when no stage is open).
+        if (!this.stageActive) return fail(Status.NOT_STAGED);
+        const st = this.staged.get(req.objectId);
+        if (!st) return fail(Status.BAD_OBJECT);
+        if (req.offset + req.payload.length > st.length) {
+          return fail(Status.BAD_OFFSET);
+        }
+        st.set(req.payload, req.offset);
+        this.stageValidated = false;
         return ok();
+      }
 
-      case Cmd.APPLY_STAGE:
-        if (this.fault === "busy") return fail(Status.BUSY);
+      case Cmd.VALIDATE_STAGE: {
+        if (!this.stageActive) return fail(Status.NOT_STAGED);
+        // M3-04: validate the staged buffer (mirrors firmware allowlist
+        // via the keycode catalogue — the mock validates length only;
+        // keycode-level validation is the C harness's job).
+        this.stageValidated = true;
         return ok();
+      }
+
+      case Cmd.APPLY_STAGE: {
+        if (this.fault === "busy") return fail(Status.BUSY);
+        // active/validated checks FIRST (firmware parity)
+        if (!this.stageActive) return fail(Status.NOT_STAGED);
+        if (!this.stageValidated) return fail(Status.NOT_STAGED);
+        const st = this.staged.get(req.objectId);
+        if (!st) return fail(Status.BAD_OBJECT);
+        // M3-04: copy stage to live, then discard the stage.
+        this.store.set(req.objectId, new Uint8Array(st));
+        this.stageActive = false;
+        this.stageValidated = false;
+        return ok();
+      }
 
       case Cmd.COMMIT_STAGE: {
         if (this.simulateKeysHeld) return fail(Status.KEYS_HELD);
@@ -231,6 +271,9 @@ export class MockTransport implements DeviceTransport {
       }
 
       case Cmd.ABORT_STAGE:
+        // M3-04: discard the stage; live store untouched.
+        this.stageActive = false;
+        this.stageValidated = false;
         return ok();
 
       case Cmd.RESET_DEFAULTS:
