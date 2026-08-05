@@ -16,10 +16,20 @@ index 1c2e8c6..45b5df8 100644
 +bool rk84_usb_is_suspended(void);
 +#endif
 diff --git a/src/main.c b/src/main.c
-index ceb44f4..2e0639b 100644
+index ceb44f4..cfb30bb 100644
 --- a/src/main.c
 +++ b/src/main.c
-@@ -61,7 +61,11 @@ void main()
+@@ -13,6 +13,9 @@
+ #include "indicators.h"
+ #include "uart.h"
+ #include "kb.h"
++#if SMK_CONFIG_PROTOCOL
++#include "config_protocol.h"
++#endif
+ #include "console.h"
+ #include "stack.h"
+ #ifdef RF_ENABLED
+@@ -61,7 +64,11 @@ void main()
      dprintf("SMK v" TOSTRING(SMK_VERSION) "\r\n");
      dprintf("DEVICE vId:" TOSTRING(USB_VID) " pId:" TOSTRING(USB_PID) "\n\r");
  
@@ -31,7 +41,7 @@ index ceb44f4..2e0639b 100644
  
      kb_init();
  
-@@ -72,7 +76,11 @@ void main()
+@@ -72,11 +79,19 @@ void main()
      // enable pwm and interrupt (driving matrix scan)
      indicators_start();
  
@@ -43,6 +53,14 @@ index ceb44f4..2e0639b 100644
  
      while (1) {
          CLR_WDT();
+ 
++#if SMK_CONFIG_PROTOCOL
++        config_protocol_task();
++#endif
++
+         kb_update_switches();
+ 
+         kb_update();
 diff --git a/src/platform/sh68f90a/delay.c b/src/platform/sh68f90a/delay.c
 index ffad1df..5ab1749 100644
 --- a/src/platform/sh68f90a/delay.c
@@ -100,10 +118,16 @@ index ac8b5fb..d58d840 100644
  }
  
 diff --git a/src/platform/sh68f90a/usb.c b/src/platform/sh68f90a/usb.c
-index 4244b76..8d79091 100644
+index 4244b76..1e750ef 100644
 --- a/src/platform/sh68f90a/usb.c
 +++ b/src/platform/sh68f90a/usb.c
-@@ -11,6 +11,21 @@
+@@ -8,9 +8,27 @@
+ #include "usbhidreport.h"
+ #include "keyboard.h"
+ #include "delay.h"
++#if SMK_CONFIG_PROTOCOL
++#include "config_protocol.h"
++#endif
  #include <stdint.h>
  #include <string.h>
  
@@ -125,7 +149,41 @@ index 4244b76..8d79091 100644
  #ifndef USB_VID
  #    define USB_VID 0xdead
  #endif
-@@ -146,17 +161,18 @@ const uint8_t hid_report_desc_extra[] = {
+@@ -34,6 +52,9 @@ typedef enum {
+     USB_EP0_STATE_RECV_STATUS = 0x02,
+     USB_EP0_STATE_LED         = 0x04,
+     USB_EP0_STATE_ISP         = 0x05,
++#if SMK_CONFIG_PROTOCOL
++    USB_EP0_STATE_CONFIG      = 0x06,  /* SMK84 config report RX */
++#endif
+ } usb_ep0_state_t;
+ 
+ const uint8_t hid_report_desc_keyboard[] = {
+@@ -127,6 +148,23 @@ const uint8_t hid_report_desc_extra[] = {
+         HID_RI_FEATURE(8, HID_IOF_DATA | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
+     HID_RI_END_COLLECTION(0),
+ 
++#if SMK_CONFIG_PROTOCOL
++    /* SMK84 configurator channel (spec §6): report ID 8, 31-byte
++     * payload, vendor usage page 0xFF60, transferred over EP0 as a
++     * multi-packet Feature Report. */
++    HID_RI_USAGE_PAGE(16, 0xff60),        // Vendor (SMK84 config)
++    HID_RI_USAGE(8, 0x01),
++    HID_RI_COLLECTION(8, 0x01),           // Application
++        HID_RI_REPORT_ID(8, REPORT_ID_SMK84_CONFIG),
++        HID_RI_USAGE(8, 0x02),
++        HID_RI_LOGICAL_MINIMUM(8, 0x00),
++        HID_RI_LOGICAL_MAXIMUM(16, 0x00ff),
++        HID_RI_REPORT_SIZE(8, 8),
++        HID_RI_REPORT_COUNT(8, CONFIG_REPORT_DATA_SIZE),
++        HID_RI_FEATURE(8, HID_IOF_DATA | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
++    HID_RI_END_COLLECTION(0),
++#endif
++
+ #if DEBUG == 1
+     HID_RI_USAGE_PAGE(16, 0xff31),        // Vendor (QMK console page)
+     HID_RI_USAGE(8, 0x74),                // Console
+@@ -146,17 +184,18 @@ const uint8_t hid_report_desc_extra[] = {
      HID_RI_USAGE(8, 0x06),                // Keyboard
      HID_RI_COLLECTION(8, 0x01),           // Application
          HID_RI_REPORT_ID(8, REPORT_ID_NKRO),
@@ -152,7 +210,7 @@ index 4244b76..8d79091 100644
          HID_RI_USAGE_PAGE(8, 0x07),       // Keyboard/Keypad
          HID_RI_USAGE_MINIMUM(8, 0x00),
          HID_RI_USAGE_MAXIMUM(8, NKRO_REPORT_BITS * 8 - 1),
-@@ -165,6 +181,7 @@ const uint8_t hid_report_desc_extra[] = {
+@@ -165,6 +204,7 @@ const uint8_t hid_report_desc_extra[] = {
          HID_RI_REPORT_SIZE(8, 1),
          HID_RI_REPORT_COUNT(8, NKRO_REPORT_BITS * 8),
          HID_RI_INPUT(8, HID_IOF_DATA | HID_IOF_VARIABLE | HID_IOF_ABSOLUTE),
@@ -160,7 +218,7 @@ index 4244b76..8d79091 100644
      HID_RI_END_COLLECTION(0),
  #endif // NKRO_ENABLE
  
-@@ -181,10 +198,10 @@ usb_desc_device_c usb_desc_device = {
+@@ -181,10 +221,10 @@ usb_desc_device_c usb_desc_device = {
      .bMaxPacketSize0    = 8,
      .idVendor           = USB_VID,
      .idProduct          = USB_PID,
@@ -173,7 +231,7 @@ index 4244b76..8d79091 100644
      .bNumConfigurations = 1,
  };
  
-@@ -215,7 +232,7 @@ usb_desc_endpoint_c usb_desc_endpoint_main = {
+@@ -215,7 +255,7 @@ usb_desc_endpoint_c usb_desc_endpoint_main = {
      .bDescriptorType  = USB_DESC_ENDPOINT,
      .bEndpointAddress = 1 | USB_DIR_IN,
      .bmAttributes     = USB_XFER_INTERRUPT,
@@ -182,7 +240,7 @@ index 4244b76..8d79091 100644
      .bInterval        = 1,  // 1ms
  };
  
-@@ -246,7 +263,7 @@ usb_desc_endpoint_c usb_desc_endpoint_extra = {
+@@ -246,7 +286,7 @@ usb_desc_endpoint_c usb_desc_endpoint_extra = {
      .bDescriptorType  = USB_DESC_ENDPOINT,
      .bEndpointAddress = 2 | USB_DIR_IN,
      .bmAttributes     = USB_XFER_INTERRUPT,
@@ -191,7 +249,7 @@ index 4244b76..8d79091 100644
      .bInterval        = 1,  // 1ms
  };
  
-@@ -282,9 +299,9 @@ static usb_desc_langid_c usb_langid = {
+@@ -282,9 +322,9 @@ static usb_desc_langid_c usb_langid = {
  };
  
  usb_ascii_string_c usb_strings[] = {
@@ -204,7 +262,16 @@ index 4244b76..8d79091 100644
  };
  
  usb_descriptor_set_c usb_descriptor_set = {
-@@ -364,6 +381,13 @@ void usb_init()
+@@ -325,7 +365,7 @@ static void usb_get_endpoint_status_handler(__xdata struct usb_req_setup *req);
+ static void usb_get_descriptor_handler(__xdata struct usb_req_setup *req);
+ static void usb_get_configuration_handler();
+ static void usb_get_interface_handler();
+-static void usb_hid_get_report_handler();
++static void usb_hid_get_report_handler(__xdata struct usb_req_setup *req);
+ static void usb_hid_set_report_handler(__xdata struct usb_req_setup *req);
+ static void usb_hid_set_idle_handler(__xdata struct usb_req_setup *req);
+ static void usb_hid_get_idle_handler();
+@@ -364,6 +404,13 @@ void usb_init()
      ep0_xfer_bytes_left = 0;
      ep0_xfer_src        = 0;
  
@@ -218,7 +285,7 @@ index 4244b76..8d79091 100644
      USBADDR = 0;
      USBIE1  = (_OVERIE | _SETUPIE | _SOFIA | _RESMIE | _SUSPIE | _PBRSTIE);
      USBIE2  = (_OEP0IE | _IEP0IE);
-@@ -402,14 +426,27 @@ void usb_send_nkro(__xdata report_nkro_t *report)
+@@ -402,14 +449,27 @@ void usb_send_nkro(__xdata report_nkro_t *report)
  void usb_send_extra(__xdata report_extra_t *report)
  {
      uint8_t timeout = 0;
@@ -248,7 +315,16 @@ index 4244b76..8d79091 100644
      SET_EP2_IN_RDY;
  }
  
-@@ -599,11 +636,32 @@ static void usb_setup_irq()
+@@ -575,7 +635,7 @@ static void usb_setup_irq()
+         case (USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_IFACE):
+             switch (request) {
+                 case USB_HID_REQ_GET_REPORT:
+-                    usb_hid_get_report_handler();
++                    usb_hid_get_report_handler(&req);
+                     break;
+ 
+                 case USB_HID_REQ_GET_IDLE:
+@@ -599,11 +659,32 @@ static void usb_setup_irq()
      }
  }
  
@@ -282,7 +358,7 @@ index 4244b76..8d79091 100644
      if (temp_usbif1 != 0x00) {
          if (temp_usbif1 & _SOFIF) {
              USBIF1 &= ~_SOFIF;
-@@ -620,8 +678,14 @@ void usb_interrupt_handler() __interrupt(_INT_USB)
+@@ -620,8 +701,14 @@ void usb_interrupt_handler() __interrupt(_INT_USB)
                  usb_setup_irq();
              } else if (temp_usbif1 & _RESMIF) { // RESMIF
                  USBIF1 &= ~_RESMIF;
@@ -297,7 +373,7 @@ index 4244b76..8d79091 100644
              } else if (temp_usbif1 & _USBRSTIF) { // BUSRSTIF
                  USBIF1 &= ~_USBRSTIF;
  
-@@ -761,8 +825,19 @@ static void usb_set_configuration_handler(__xdata struct usb_req_setup *req)
+@@ -761,8 +848,19 @@ static void usb_set_configuration_handler(__xdata struct usb_req_setup *req)
  
              if (active_configuration != 0) {
                  usb_device_state = USB_DEVICE_STATE_CONFIGURED;
@@ -317,6 +393,68 @@ index 4244b76..8d79091 100644
              }
  
              CLEAR_EP0_CNT;
+@@ -991,8 +1089,23 @@ static void usb_get_interface_handler()
+     SET_EP0_IN_RDY;
+ }
+ 
+-static void usb_hid_get_report_handler()
++static void usb_hid_get_report_handler(__xdata struct usb_req_setup *req)
+ {
++    (void)req;
++#if SMK_CONFIG_PROTOCOL
++    /* GET_REPORT (report ID 8): return the prepared config response
++     * (multi-packet IN via step_ep0_in_xfer). */
++    if (req->wValue == (REPORT_TYPE_FEATURE << 8 | REPORT_ID_SMK84_CONFIG)) {
++        uint8_t len;
++        const uint8_t *resp = config_tx_get(&len);
++        if (resp != NULL && len > 0) {
++            setup_ep0_in_xfer((uint8_t *)resp, len);
++            usb_ep0_state = USB_EP0_STATE_IN_DATA;
++            SET_EP0_IN_RDY;
++            return;
++        }
++    }
++#endif
+     STALL_EP0();
+ }
+ 
+@@ -1012,7 +1125,15 @@ static void usb_hid_set_report_handler(__xdata struct usb_req_setup *req)
+                 usb_ep0_state = USB_EP0_STATE_ISP;
+                 SET_EP0_OUT_RDY;
+             }
+-
++#if SMK_CONFIG_PROTOCOL
++            else if ((req->wValue & 0xff) == REPORT_ID_SMK84_CONFIG) {
++                /* Multi-packet accumulation: each 8-byte OUT packet is
++                 * appended to the config RX mailbox by the EP0 OUT IRQ
++                 * until all 32 bytes (report ID + payload) arrive. */
++                usb_ep0_state = USB_EP0_STATE_CONFIG;
++                SET_EP0_OUT_RDY;
++            }
++#endif
+             break;
+ 
+         default:
+@@ -1077,6 +1198,19 @@ void usb_ep0_out_irq()
+         if (EP0_OUT_BUF[0] == 0x05 && EP0_OUT_BUF[1] == 0x75) {
+             isp_jump();
+         }
++#if SMK_CONFIG_PROTOCOL
++    } else if (usb_ep0_state == USB_EP0_STATE_CONFIG) {
++        /* ISR discipline (spec §6.3): append the 8-byte packet to the
++         * config RX mailbox; the mailbox sets pending when the full
++         * 32-byte report has arrived. No parsing, no flash, no long
++         * loops. */
++        config_rx_append(EP0_OUT_BUF, EP0_BUF_SIZE);
++        if (config_rx_pending()) {
++            usb_ep0_state = 0;
++        }
++        CLEAR_EP0_CNT;
++        SET_EP0_IN_RDY;
++#endif
+     } else {
+         usb_ep0_state = 0;
+         CLEAR_EP0_CNT;
 diff --git a/src/platform/sh68f90a/usb.h b/src/platform/sh68f90a/usb.h
 index e5230aa..1bbc902 100644
 --- a/src/platform/sh68f90a/usb.h
@@ -513,7 +651,7 @@ index 00f5137..6a70ddd 100644
 + * when unchanged. Also safe after resume. */
 +void host_extra_force_resync(void);
 diff --git a/src/smk/matrix.c b/src/smk/matrix.c
-index b1d81c1..fe93513 100644
+index b1d81c1..ed138c8 100644
 --- a/src/smk/matrix.c
 +++ b/src/smk/matrix.c
 @@ -8,6 +8,12 @@
@@ -529,7 +667,7 @@ index b1d81c1..fe93513 100644
  #include <stdlib.h>
  #include <stdbool.h>
  
-@@ -23,6 +29,59 @@ volatile bool                 matrix_updated;
+@@ -23,6 +29,61 @@ volatile bool                 matrix_updated;
  
  uint8_t action_layer;
  
@@ -572,13 +710,15 @@ index b1d81c1..fe93513 100644
 +    }
 +
 +#if SMK_DYNAMIC_KEYMAP
-+    /* Configurator (M2): a validated runtime map overrides the
-+     * compiled defaults when active. 0xFFFF means inactive/out of
-+     * range -> keep the compiled resolution above. */
-+    {
++    /* Configurator (M2/M3): when the runtime map is active it REPLACES
++     * compiled resolution entirely — dynamic_keymap_resolve() performs
++     * the full base-layer + KC_TRANSPARENT fallback itself (audit:
++     * layering a raw dynamic overlay on the compiled result would emit
++     * KC_TRANSPARENT for unmodified Fn-layer cells). */
++    if (dynamic_keymap_is_active()) {
 +        uint16_t dyn = dynamic_keymap_resolve(action_layer, row, col);
 +        if (dyn != 0xFFFFu) {
-+            qcode = dyn;
++            return dyn;
 +        }
 +    }
 +#endif
@@ -589,7 +729,7 @@ index b1d81c1..fe93513 100644
  void matrix_init()
  {
      current_step   = 0;
-@@ -33,6 +92,20 @@ void matrix_init()
+@@ -33,6 +94,20 @@ void matrix_init()
          matrix[i]          = 0;
          matrix_previous[i] = 0;
      }
@@ -610,7 +750,7 @@ index b1d81c1..fe93513 100644
  }
  
  matrix_col_t matrix_get_col(uint8_t col)
-@@ -47,17 +120,45 @@ matrix_col_t matrix_can_read()
+@@ -47,17 +122,45 @@ matrix_col_t matrix_can_read()
  
  void process_key_state(uint8_t row, uint8_t col, bool pressed)
  {
@@ -659,7 +799,7 @@ index b1d81c1..fe93513 100644
              action_layer = 0;
          }
  
-@@ -65,14 +166,6 @@ void process_key_state(uint8_t row, uint8_t col, bool pressed)
+@@ -65,14 +168,6 @@ void process_key_state(uint8_t row, uint8_t col, bool pressed)
          return;
      }
  
@@ -674,7 +814,7 @@ index b1d81c1..fe93513 100644
      if (!kb_process_record(qcode, pressed)) {
          return;
      }
-@@ -138,6 +231,12 @@ uint8_t matrix_task()
+@@ -138,6 +233,12 @@ uint8_t matrix_task()
          return matrix_changed;
      }
  
@@ -687,7 +827,7 @@ index b1d81c1..fe93513 100644
      for (uint8_t col = 0; col < MATRIX_COLS; col++) {
          __xdata const matrix_col_t current_col = matrix_get_col(col);
          __xdata const matrix_col_t col_changes = current_col ^ matrix_previous[col];
-@@ -152,7 +251,35 @@ uint8_t matrix_task()
+@@ -152,7 +253,35 @@ uint8_t matrix_task()
              if (col_changes & row_mask) {
                  __xdata const bool key_pressed = current_col & row_mask;
  
@@ -723,7 +863,7 @@ index b1d81c1..fe93513 100644
              }
          }
  
-@@ -175,7 +302,24 @@ void matrix_scan_step()
+@@ -175,7 +304,24 @@ void matrix_scan_step()
  
          user_matrix_post_scan();
  

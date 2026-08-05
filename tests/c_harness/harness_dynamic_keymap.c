@@ -134,10 +134,14 @@ static void test_keycode_allowlist(void)
           "basic usage allowed");
     CHECK(dynamic_keymap_keycode_allowed(0xE7 /* KC_F24 */) == true,
           "F24 (top of basic) allowed");
-    CHECK(dynamic_keymap_keycode_allowed(0x0158 /* consumer */) == true,
+    CHECK(dynamic_keymap_keycode_allowed(0x00AB /* KC_MEDIA_NEXT_TRACK */) == true,
           "consumer range allowed");
-    CHECK(dynamic_keymap_keycode_allowed(0x0201 /* system */) == true,
+    CHECK(dynamic_keymap_keycode_allowed(0x00A5 /* KC_SYSTEM_POWER */) == true,
           "system range allowed");
+    CHECK(dynamic_keymap_keycode_allowed(0x0158 /* QK_MODS range */) == false,
+          "QK_MODS combo rejected (audit F3)");
+    CHECK(dynamic_keymap_keycode_allowed(0x0201 /* unmapped */) == false,
+          "unmapped 0x0201 rejected");
     CHECK(dynamic_keymap_keycode_allowed(RGB_BRI_UP) == true,
           "RGB custom allowed");
     CHECK(dynamic_keymap_keycode_allowed(0x0300u) == false,

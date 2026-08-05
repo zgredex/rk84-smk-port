@@ -1,5 +1,5 @@
 diff --git a/meson.build b/meson.build
-index afa6bfd..0e3dfed 100644
+index afa6bfd..dbf14a6 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -17,11 +17,41 @@ default_options = {
@@ -44,7 +44,7 @@ index afa6bfd..0e3dfed 100644
  ]
  
  # SMK
-@@ -94,7 +124,10 @@ possible_src_keyboard = [
+@@ -94,7 +124,13 @@ possible_src_keyboard = [
      'user_matrix.c',
      'user_init.c',
      # 'user_keyboard.c',
@@ -53,10 +53,13 @@ index afa6bfd..0e3dfed 100644
 +    # Configurator M2: dynamic keymap (compiled out unless the board
 +    # defines SMK_DYNAMIC_KEYMAP via cc_args).
 +    'dynamic_keymap.c',
++    # Configurator M3: USB config protocol (compiled out unless
++    # SMK_CONFIG_PROTOCOL via cc_args).
++    'config_protocol.c',
  ]
  
  possible_src_layout = [
-@@ -123,6 +156,8 @@ endif
+@@ -123,6 +159,8 @@ endif
  
  if get_option('buildtype') == 'debug'
      cc_base_args += '-DDEBUG=1'
@@ -65,7 +68,7 @@ index afa6bfd..0e3dfed 100644
  endif
  
  sdar_args = ['-rc']
-@@ -130,7 +165,7 @@ sdar_args = ['-rc']
+@@ -130,7 +168,7 @@ sdar_args = ['-rc']
  cc = find_program('sdcc', required : true)
  sdar = find_program('sdar', required : true)
  packihx = find_program('packihx', required : true)
@@ -74,7 +77,7 @@ index afa6bfd..0e3dfed 100644
  
  # Host-side generator that bakes per-device LED animation geometry into ROM tables
  # (see utils/led_geometry_gen.c). Compiled once with the host compiler at configure
-@@ -181,6 +216,79 @@ foreach part : parts
+@@ -181,6 +219,82 @@ foreach part : parts
              '-DUSB_PID=@0@'.format(options['product_id']),
          ]
  
@@ -149,12 +152,15 @@ index afa6bfd..0e3dfed 100644
 +            # Excluded from recovery: the recovery image stays minimal
 +            # (no matrix init, no keymap, no XRAM cost).
 +            cc_args += '-DSMK_DYNAMIC_KEYMAP=1'
++            # Configurator M3: USB config protocol (report ID 8).
++            # Requires the dynamic keymap (protocol edits it).
++            cc_args += '-DSMK_CONFIG_PROTOCOL=1'
 +        endif
 +
          wireless = options.get('wireless', '')
          if wireless == 'bk3632'
              src_main += src_platform_bk3632
-@@ -260,10 +368,16 @@ foreach part : parts
+@@ -260,10 +374,16 @@ foreach part : parts
          )
  
          flash_target_name = '@0@flash'.format(prefix)

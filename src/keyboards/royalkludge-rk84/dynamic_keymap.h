@@ -1,5 +1,5 @@
 /*
- * RK84 dynamic keymap — header (configurator M2).
+ * RK84 dynamic keymap — header (configurator M2/M3).
  *
  * Spec: SMK84-CONFIGURATOR-AND-RGB-ANIMATION-SPEC.md §8.
  * Guarded by SMK_DYNAMIC_KEYMAP=1 (meson cc_args).
@@ -9,20 +9,11 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "config_protocol.h"  /* config_status_t (M3 unified) */
 
 #define RK84_DYNAMIC_LAYERS 2u
 #define RK84_MATRIX_ROWS    6u
 #define RK84_MATRIX_COLS    16u
-
-/* config_status_t comes from config_protocol.h (M3); for M2 the
- * dynamic map is consumed by the matrix resolver before the protocol
- * exists. Keep a minimal status enum here so this module compiles
- * standalone; M3 will alias it to the protocol status type. */
-typedef enum {
-    CFG_STATUS_OK = 0,
-    CFG_STATUS_BAD_OFFSET,
-    CFG_STATUS_BAD_KEYCODE,
-} config_status_t;
 
 #if SMK_DYNAMIC_KEYMAP
 

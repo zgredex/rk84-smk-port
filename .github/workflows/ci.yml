@@ -35,8 +35,32 @@ jobs:
             tests.test_rgb_model \
             tests.test_usb_full_acceptance \
             tests.test_c_harness \
+            tests.test_dynamic_keymap_harness \
+            tests.test_configurator_harnesses \
             2>&1 | tee test.log
           ! grep -qE '^FAILED|errors=' test.log || exit 1
+
+  # Configurator (M1): TypeScript protocol core + mock transport.
+  configurator:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: configurator/package-lock.json
+
+      - name: Install
+        run: npm ci
+        working-directory: configurator
+
+      - name: TypeScript tests
+        run: npm test
+        working-directory: configurator
 
   build:
     runs-on: ubuntu-latest
@@ -59,6 +83,11 @@ jobs:
           - name: rk84-dual
             setup: "-Drk84_stage=matrix -Drk84_dual_reports=true"
             dir: build-rk84-dual
+          - name: rk84-dynamic
+            # Configurator M2/M3: dynamic keymap + config protocol
+            # (report ID 8) on the full USB runtime.
+            setup: "-Drk84_stage=usb -Drk84_dynamic_keymap=true"
+            dir: build-rk84-dynamic
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
