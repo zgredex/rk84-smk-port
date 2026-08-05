@@ -98,6 +98,15 @@ jobs:
             exit 1
           }
 
+      - name: XRAM budget gate (${{ matrix.name }})
+        # Static XDATA must stay under 3 KiB: a future dynamic-keymap
+        # configurator adds ~384 B on top of today's 1,207 B. Fail CI
+        # on silent XRAM drift before it breaks the configurator.
+        run: |
+          python3 $PWD/tools/check-xram-budget.py \
+            smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.mem \
+            --limit 3072
+
       - name: Validate HEX (bounds + checksum, cap 0xBC00)
         run: |
           python3 $PWD/tools/check-hex-bounds.py \
