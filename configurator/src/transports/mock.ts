@@ -31,6 +31,7 @@ import {
   type RequestPacket,
   type ResponsePacket,
 } from "../protocol/packet.js";
+import { RK84_DEFAULT_KEYMAP } from "../generated/rk84-default-keymap.js";
 import type { DeviceTransport } from "./transport.js";
 
 /** Error modes for save/commit fault simulation. */
@@ -44,6 +45,16 @@ export type MockFault =
 /** N2 (audit): strict M3 firmware behavior by default; persistence
  * simulation only behind the explicit "future-storage" mode. */
 export type MockMode = "m3" | "future-storage";
+
+/** Encode a u16 keymap into the 384-byte LE byte array (Q1). */
+function encodeKeymap(values: Uint16Array): Uint8Array {
+  const bytes = new Uint8Array(values.length * 2);
+  for (let i = 0; i < values.length; i++) {
+    bytes[i * 2] = values[i] & 0xff;
+    bytes[i * 2 + 1] = values[i] >>> 8;
+  }
+  return bytes;
+}
 
 export class MockTransport implements DeviceTransport {
   /** Object store: objectId -> Uint8Array (size from OBJECT_SIZES). */
@@ -86,22 +97,22 @@ export class MockTransport implements DeviceTransport {
     this.store.set(0x80, new Uint8Array(64));
     this.store.set(0x81, new Uint8Array(126)); // led map placeholder
     this.store.set(0x82, new Uint8Array(64)); // diagnostics
-    // Firmware-accurate keymap defaults (P4c: must match the C harness
-    // model): base-layer Fn (5,9) = MO(1) = 0x5221; Fn-layer Fn (5,9) =
-    // KC_TRANSPARENT (0x0001) — the harness models the same. Other
-    // cells stay KC_NO (valid).
-    const km = new Uint8Array(OBJECT_SIZES[ObjectId.KEYMAP] ?? 384);
-    const baseFn = (5 * 16 + 9) * 2; // base layer, (row5, col9)
-    km[baseFn] = 0x21;
-    km[baseFn + 1] = 0x52;
-    const fnLayerFn = (1 * 6 * 16 + 5 * 16 + 9) * 2; // Fn layer (row5, col9)
-    km[fnLayerFn] = 0x01; // KC_TRANSPARENT
-    km[fnLayerFn + 1] = 0x00;
+    // Q1 (audit): the mock's compiled defaults MUST be the REAL RK84
+    // layout (generated from layout.c via keymap_fixture.py), not a
+    // synthetic blank map. The protocol object is exactly 384 bytes.
+    const expected = OBJECT_SIZES[ObjectId.KEYMAP];
+    const defaultBytes = encodeKeymap(RK84_DEFAULT_KEYMAP);
+    if (compiledDefaults === undefined) {
+      compiledDefaults = defaultBytes;
+    } else if (compiledDefaults.length !== expected) {
+      throw new RangeError(
+        `compiled keymap has ${compiledDefaults.length} bytes; ` +
+        `expected ${expected}`,
+      );
+    }
     // P4b: clone the caller's defaults — the "immutable" baseline must
     // not be externally mutable.
-    this.compiledDefaults = compiledDefaults
-      ? new Uint8Array(compiledDefaults)
-      : km;
+    this.compiledDefaults = new Uint8Array(compiledDefaults);
     this.store.set(ObjectId.KEYMAP, new Uint8Array(this.compiledDefaults));
   }
 

@@ -63,55 +63,11 @@ static void setup_ep0_in_xfer(uint8_t *src, uint16_t len)
     ep0_xfer_bytes_left = len;
 }
 
-/* The REAL wrapper — extracted verbatim from usb.c. This is the
- * production code path used by the firmware's GET_REPORT handler. */
-static void step_ep0_in_xfer(void)
-{
-#if SMK_CONFIG_PROTOCOL
-    /* N4 (audit): the packetization decisions live in the shared
-     * ep0_xfer_next() (config_protocol.c) — the harness compiles the
-     * SAME code, so the state machine can never drift. The packet
-     * buffer + xfer state live in XRAM: the DSEG overlay is full. */
-    static __xdata uint8_t packet[EP0_BUF_SIZE];
-    static __xdata uint8_t len;
-    __xdata ep0_xfer_t xfer;
-    xfer.src = ep0_xfer_src;
-    xfer.remaining = ep0_xfer_bytes_left;
-
-    ep0_next_state_t next = ep0_xfer_next(&xfer, packet, &len);
-
-    ep0_xfer_src = (uint8_t *)xfer.src;
-    ep0_xfer_bytes_left = xfer.remaining;
-
-    set_ep0_in_buffer(packet, len);
-    SET_EP0_CNT(len);
-
-    usb_ep0_state = (next == EP0_NEXT_DATA)
-                        ? USB_EP0_STATE_IN_DATA
-                        : USB_EP0_STATE_RECV_STATUS;
-#else
-    /* Baseline (no config protocol): original inline packetization. */
-    if (ep0_xfer_bytes_left == 0) {
-        usb_ep0_state = USB_EP0_STATE_RECV_STATUS;
-        SET_EP0_CNT(0);
-    } else if (ep0_xfer_bytes_left > EP0_BUF_SIZE) {
-        usb_ep0_state = USB_EP0_STATE_IN_DATA;
-        set_ep0_in_buffer(ep0_xfer_src, EP0_BUF_SIZE);
-        ep0_xfer_bytes_left -= EP0_BUF_SIZE;
-        ep0_xfer_src += EP0_BUF_SIZE;
-        SET_EP0_CNT(EP0_BUF_SIZE);
-    } else if (ep0_xfer_bytes_left == EP0_BUF_SIZE) {
-        usb_ep0_state = USB_EP0_STATE_IN_DATA;
-        set_ep0_in_buffer(ep0_xfer_src, EP0_BUF_SIZE);
-        ep0_xfer_bytes_left = 0;
-        SET_EP0_CNT(EP0_BUF_SIZE);
-    } else {
-        usb_ep0_state = USB_EP0_STATE_RECV_STATUS;
-        set_ep0_in_buffer(ep0_xfer_src, ep0_xfer_bytes_left);
-        SET_EP0_CNT(ep0_xfer_bytes_left);
-    }
-#endif
-}
+/* Q2 (audit): the PRODUCTION wrapper is inserted here verbatim from
+ * the ACTUAL patched usb.c at build time (see
+ * tests/c_harness/usb_ep0_template.c + build_usb_ep0 in
+ * tests/test_configurator_harnesses.py) — never a hand copy. */
+/* INSERT_PRODUCTION_WRAPPER */
 
 /* set_ep0_in_buffer from usb.c (verbatim). */
 static void set_ep0_in_buffer(uint8_t *src, uint8_t len)

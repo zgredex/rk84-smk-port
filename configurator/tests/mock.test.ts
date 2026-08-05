@@ -5,6 +5,7 @@ import { MockTransport } from "../src/transports/mock.js";
 import { ConfiguratorClient, ConfiguratorError } from "../src/protocol/client.js";
 import { Cmd, ObjectId, Status } from "../src/protocol/constants.js";
 import {
+  decodeRequest,
   decodeResponse,
   encodeRequest,
   encodeResponse,
@@ -35,6 +36,32 @@ class CorruptResponseTransport implements DeviceTransport {
       command: resp.command & 0x7f, // strip the response bit
     });
     return wrapReport(out);
+  }
+}
+
+/** Transport that injects one unexpected success byte into replies for
+ * a specific command — proves the client rejects over-long successful
+ * responses for zero-length commands (Q3 / P2). */
+class ExtraPayloadTransport implements DeviceTransport {
+  constructor(
+    private readonly inner: DeviceTransport,
+    private readonly targetCommand: Cmd,
+  ) {}
+
+  async connect(): Promise<void> { return this.inner.connect(); }
+  async disconnect(): Promise<void> { return this.inner.disconnect(); }
+  isConnected(): boolean { return this.inner.isConnected(); }
+
+  async transact(report: Uint8Array): Promise<Uint8Array> {
+    const request = decodeRequest(unwrapReport(report));
+    const reply = await this.inner.transact(report);
+    if (request.command !== this.targetCommand) return reply;
+    const response = decodeResponse(unwrapReport(reply));
+    return wrapReport(encodeResponse({
+      ...response,
+      status: Status.OK,
+      payload: new Uint8Array([0xaa]),
+    }));
   }
 }
 
@@ -133,7 +160,7 @@ test("staged write + abort leaves live store untouched (M3-04)", async () => {
   const { t, c } = fresh();
   await c.connect();
   const liveBefore = t.getObject(ObjectId.KEYMAP);
-  assert.equal(liveBefore[0], 0); // zeroed store
+  const firstByte = liveBefore[0]; // real compiled default (ESC = 0x29)
 
   await c.beginStage(ObjectId.KEYMAP);
   const data = new Uint8Array(4).fill(0x5a);
@@ -141,7 +168,10 @@ test("staged write + abort leaves live store untouched (M3-04)", async () => {
   await c.abortStage(ObjectId.KEYMAP);
 
   const liveAfter = t.getObject(ObjectId.KEYMAP);
-  assert.equal(liveAfter[0], 0, "aborted staged write must not reach live store");
+  assert.equal(liveAfter[0], firstByte,
+               "aborted staged write must not reach live store");
+  assert.equal(liveAfter[1], liveBefore[1],
+               "byte 1 unchanged after abort");
 });
 
 test("staged write + validate + apply reaches live store (M3-04)", async () => {
@@ -166,20 +196,27 @@ test("write chunk respects 24-byte limit across object boundary (staged)", async
   const data = new Uint8Array(300); // all KC_NO = valid
   data[0] = 0x04; // KC_A at cell 0 (bytes 0-1)
   data[2] = 0x05; // KC_B at cell 1 (bytes 2-3)
-  // preserve the locked Fn default MO(1) at bytes 178-179
+  // preserve the locked Fn defaults: base (5,9) = MO(1) 0x5221 at
+  // bytes 178-179; Fn-layer (5,9) = KC_TRANSPARENT 0x0001 at 370-371
   data[178] = 0x21;
   data[179] = 0x52;
+  data[370] = 0x01;
+  data[371] = 0x00;
   await c.beginStage(ObjectId.KEYMAP);
   await c.writeChunk(ObjectId.KEYMAP, 0, data);
-  // stage is not live yet
-  assert.equal(t.getObject(ObjectId.KEYMAP)[0], 0, "live store untouched before apply");
+  // stage is not live yet (live store still holds the compiled default)
+  assert.notEqual(t.getObject(ObjectId.KEYMAP)[0], 0x04,
+                  "live store untouched before apply");
   await c.validateStage(ObjectId.KEYMAP);
   await c.applyStage(ObjectId.KEYMAP);
   // re-fetch AFTER apply (apply replaces the live array)
   const obj = t.getObject(ObjectId.KEYMAP);
   assert.deepEqual([...obj.slice(0, 300)], [...data]);
-  // untouched tail
-  assert.equal(obj[300], 0);
+  // untouched tail keeps the COMPILED default (KC_TRANSPARENT at
+  // byte 300 in the real layout)
+  const freshMock = new MockTransport();
+  const compiledTail = freshMock.getObject(ObjectId.KEYMAP)[300];
+  assert.equal(obj[300], compiledTail);
 });
 
 test("commit with keys held -> KEYS_HELD (future-storage mode)", async () => {
@@ -258,6 +295,73 @@ test("READ_OBJECT preserves BAD_OFFSET instead of BAD_LENGTH (P1)", async () => 
       assert.equal((e as ConfiguratorError).status, Status.BAD_OFFSET);
       return true;
     },
+  );
+});
+
+test("over-long WRITE_CHUNK success response rejected (Q3/P2)", async () => {
+  const inner = new MockTransport();
+  const transport = new ExtraPayloadTransport(inner, Cmd.WRITE_CHUNK);
+  const c = new ConfiguratorClient(transport);
+  await c.connect();
+  await c.beginStage(ObjectId.KEYMAP);
+  await assert.rejects(
+    () => c.writeChunk(ObjectId.KEYMAP, 0, new Uint8Array([0x04, 0x00])),
+    (e: unknown) => {
+      assert.ok(e instanceof ConfiguratorError);
+      assert.equal((e as ConfiguratorError).status, Status.BAD_LENGTH);
+      return true;
+    },
+  );
+});
+
+test("over-long COMMIT_STAGE success response rejected (Q3/P2)", async () => {
+  const transport = new ExtraPayloadTransport(new MockTransport(), Cmd.COMMIT_STAGE);
+  const c = new ConfiguratorClient(transport);
+  await c.connect();
+  await assert.rejects(
+    () => c.commitStage(),
+    (e: unknown) => {
+      assert.ok(e instanceof ConfiguratorError);
+      assert.equal((e as ConfiguratorError).status, Status.BAD_LENGTH);
+      return true;
+    },
+  );
+});
+
+test("over-long RESET_DEFAULTS success response rejected (Q3/P2)", async () => {
+  const transport = new ExtraPayloadTransport(new MockTransport(), Cmd.RESET_DEFAULTS);
+  const c = new ConfiguratorClient(transport);
+  await c.connect();
+  await assert.rejects(
+    () => c.resetDefaults(),
+    (e: unknown) => {
+      assert.ok(e instanceof ConfiguratorError);
+      assert.equal((e as ConfiguratorError).status, Status.BAD_LENGTH);
+      return true;
+    },
+  );
+});
+
+test("getObject returns a copy (Q3/P4b)", () => {
+  const mock = new MockTransport();
+  const first = mock.getObject(ObjectId.KEYMAP);
+  first[0] ^= 0xff;
+  const second = mock.getObject(ObjectId.KEYMAP);
+  assert.notEqual(first[0], second[0], "mutating a getObject result must not alter the live store");
+});
+
+test("constructor clones compiled defaults (Q3/P4b)", () => {
+  const defaults = new Uint8Array(384);
+  const mock = new MockTransport(defaults);
+  defaults[0] = 0xff;
+  assert.equal(mock.getObject(ObjectId.KEYMAP)[0], 0,
+               "mutating the constructor input must not alter compiledDefaults");
+});
+
+test("constructor rejects wrong default length (Q3/Q1)", () => {
+  assert.throws(
+    () => new MockTransport(new Uint8Array(100)),
+    /compiled keymap has 100 bytes; expected 384/,
   );
 });
 

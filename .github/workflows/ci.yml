@@ -40,6 +40,12 @@ jobs:
             2>&1 | tee test.log
           ! grep -qE '^FAILED|errors=' test.log || exit 1
 
+      # Q1 (audit): the generated TS default keymap must match the
+      # firmware layout source — fail CI if it drifted.
+      - name: Check generated configurator keymap is current
+        run: |
+          python3 $PWD/tools/generate-configurator-keymap.py --check
+
   # Configurator (M1): TypeScript protocol core + mock transport.
   configurator:
     runs-on: ubuntu-latest
