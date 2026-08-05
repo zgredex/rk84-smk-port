@@ -45,3 +45,16 @@ in all planes (15/15 rgb-model tests still pass).
 - Then: measured phase tables (PWM0/PWM00CON duty per plane) -> Flash B
   full-board RGB acceptance
 - Then M4/M5 milestone firmware (A/B persistence, built-in effects)
+
+## Stock restore (2026-08-05, done)
+
+- Backup verified: MD5 4ca60eb0799b5ee1b4247056df8ec1f0 (stock image)
+- enter-isp: OK (log shows "ISP present as 0603:1020")
+- Wrote stock via sinowisp write --yes: 30/30 pages verified
+- Reboot: device re-enumerated as 258a:0059 normal mode
+- **Board state: STOCK FACTORY FIRMWARE** (RGB diagnostic replaced)
+- Known bug: restore-stock.sh's device_present() poll failed even though
+  ISP was present — system_profiler -json field names on macOS 26.5
+  don't match the parser (vendor_id/product_id). Hardware + write flow
+  fine; script node-check needs the same fix as the bench flow (use
+  sinowisp list or ioreg instead of system_profiler -json).
