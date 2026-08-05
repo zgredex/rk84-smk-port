@@ -1,0 +1,40 @@
+{
+  "format": "smk-keyboard-definition",
+  "version": 1,
+  "id": "royalkludge-rk84-smk",
+  "name": "Royal Kludge RK84",
+  "usb": {
+    "vendorId": 9610,
+    "productId": 89,
+    "configReportId": 8,
+    "usagePage": 65376,
+    "usage": 1
+  },
+  "matrix": {
+    "rows": 6,
+    "cols": 16,
+    "layers": 2
+  },
+  "rgb": {
+    "electricalRows": 6,
+    "sourceColumns": 21,
+    "positions": 126,
+    "mappingStatus": "unverified"
+  },
+  "capabilities": {
+    "dynamicKeymap": true,
+    "staticRgb": true,
+    "builtInAnimations": true,
+    "customAnimationVm": true,
+    "macros": false,
+    "wirelessConfiguration": false
+  },
+  "lockedKeys": [
+    {
+      "row": 5,
+      "col": 9,
+      "reason": "Fn key fixed in protocol v1"
+    }
+  ],
+  "layout": []
+}

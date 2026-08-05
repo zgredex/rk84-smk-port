@@ -1,0 +1,17 @@
+{
+  "name": "smk84-configurator",
+  "version": "0.1.0",
+  "description": "SMK84 Configurator — VIA-like utility for the RK84 (protocol core, mock transport, simulator). Milestone M1: app core with mock device.",
+  "private": true,
+  "type": "module",
+  "license": "GPL-2.0",
+  "scripts": {
+    "test": "tsc && node --test \"dist/tests/**/*.test.js\"",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "typescript": "^5.5.0"
+  }
+}
