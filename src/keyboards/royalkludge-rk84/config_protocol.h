@@ -120,12 +120,32 @@ typedef struct {
  * a plain __xdata array (SDCC cannot put xdata arrays inside structs). */
 #define CONFIG_STAGE_BUF_SIZE CONFIG_STAGE_MAX
 
+/* ---- HID request validation (R2 audit: factored for testing) --------- */
+
+bool config_set_report_valid(
+    uint8_t report_type, uint8_t report_id,
+    uint16_t interface, uint16_t length);
+bool config_get_report_valid(
+    uint8_t report_type, uint8_t report_id,
+    uint16_t interface, uint16_t length);
+
 /* ---- API ------------------------------------------------------------ */
 
-/* Begin a fresh config-report accumulation (M3-05): called from the
- * SET_REPORT handler on acceptance so a partial/aborted previous
- * transfer can never contaminate the next one. ISR-safe. */
-void config_rx_begin(void);
+/* Start a host config-report transfer (R5): discards any ABANDONED
+ * partial accumulation, but REFUSES (returns false) when a complete
+ * request is still pending/being processed — the main loop owns it
+ * until config_rx_release(). Called from the SET_REPORT handler.
+ * ISR-safe. */
+bool config_rx_start(void);
+
+/* Force-reset the RX mailbox (USB reset / re-enumeration only):
+ * unconditionally clears pending + length. Never called while the
+ * main loop may be processing a request. */
+void config_rx_force_reset(void);
+
+/* Invalidate the prepared TX response (R5): a new request must not
+ * be answered with the previous transaction's response. */
+void config_tx_invalidate(void);
 
 /* Called from the USB ISR (usb.c) when the SET_REPORT handler accepts
  * a config report packet; appends up to 8 bytes into the RX mailbox.

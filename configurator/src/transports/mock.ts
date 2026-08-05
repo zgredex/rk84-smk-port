@@ -16,12 +16,16 @@ import {
   Cmd,
   Flags,
   OBJECT_SIZES,
+  ObjectId,
+  RGB_BRI_DN,
+  RGB_BRI_UP,
   Status,
 } from "../protocol/constants.js";
 import {
   decodeRequest,
   encodeResponse,
   unwrapReport,
+  withResponseBit,
   wrapReport,
   type RequestPacket,
   type ResponsePacket,
@@ -41,11 +45,12 @@ export class MockTransport implements DeviceTransport {
   private store = new Map<number, Uint8Array>();
   private connected = false;
   private busy = false;
-  /** M3-04 (audit): real staging state — BEGIN snapshots live into
-   * staged, WRITE mutates staged only, VALIDATE checks, APPLY copies
-   * staged to live, ABORT discards. Mirrors firmware config_protocol.c. */
-  private staged = new Map<number, Uint8Array>();
-  private stageActive = false;
+  /** M3-04/R1 (audit): real staging state — BEGIN snapshots live into
+   * a SINGLE staged object, WRITE mutates it only, VALIDATE checks the
+   * keycodes, APPLY copies to live, ABORT discards. Mirrors firmware
+   * config_protocol.c. Exactly one object can be staged at a time. */
+  private stageObject: number | null = null;
+  private stagedData: Uint8Array | null = null;
   private stageValidated = false;
   /** Exact-request cache (audit F6/M3-04): the complete request is
    * compared, not just the transaction ID. */
@@ -68,6 +73,15 @@ export class MockTransport implements DeviceTransport {
     this.store.set(0x80, new Uint8Array(64));
     this.store.set(0x81, new Uint8Array(126)); // led map placeholder
     this.store.set(0x82, new Uint8Array(64)); // diagnostics
+    // Firmware-accurate keymap defaults: the locked Fn cell (5,9) is
+    // MO(1) = 0x5221 on the base layer (R1 — validation compares
+    // against this). Other cells stay KC_NO (valid).
+    const km = this.store.get(ObjectId.KEYMAP);
+    if (km) {
+      const fnIdx = (5 * 16 + 9) * 2; // base layer, (row5, col9)
+      km[fnIdx] = 0x21;
+      km[fnIdx + 1] = 0x52;
+    }
   }
 
   async connect(): Promise<void> {
@@ -87,6 +101,44 @@ export class MockTransport implements DeviceTransport {
     const o = this.store.get(id);
     if (!o) throw new Error(`no object ${id}`);
     return o;
+  }
+
+  /** R1 (audit): firmware-equivalent keymap validation — same SMK
+   * predicate ranges the firmware allowlist uses (basic, System,
+   * Consumer, modifier, MO(1), RGB custom) + the locked Fn cell
+   * (5,9) which must keep its default value. */
+  private validateKeymap(raw: Uint8Array): Status {
+    const size = 2 * 6 * 16 * 2;
+    if (raw.length !== size) return Status.BAD_LENGTH;
+
+    const isBasic = (c: number) => c >= 0x04 && c <= 0xa4;
+    const isSystem = (c: number) => c >= 0xa5 && c <= 0xa7;
+    const isConsumer = (c: number) => c >= 0xa8 && c <= 0xc2;
+    const isModifier = (c: number) => c >= 0xe0 && c <= 0xe7;
+    const isMomentary = (c: number) => c >= 0x5220 && c <= 0x523f;
+    const allowed = (c: number) =>
+      c === 0x00 /* KC_NO */ ||
+      c === 0x01 /* KC_TRANSPARENT */ ||
+      isBasic(c) || isSystem(c) || isConsumer(c) || isModifier(c) ||
+      isMomentary(c) ||
+      c === RGB_BRI_UP || c === RGB_BRI_DN;
+
+    for (let cell = 0; cell < size / 2; cell++) {
+      const code = raw[cell * 2] | (raw[cell * 2 + 1] << 8);
+      const pos = cell % (6 * 16);
+      const row = Math.floor(pos / 16);
+      const col = pos % 16;
+      if (row === 5 && col === 9) {
+        // locked Fn: must keep its compiled default (keymaps[][][]
+        // layer-major; the live store holds the default at boot)
+        const live = this.store.get(ObjectId.KEYMAP);
+        const defaultCode = live ? live[cell * 2] | (live[cell * 2 + 1] << 8) : 0;
+        if (code !== defaultCode) return Status.BAD_KEYCODE;
+        continue;
+      }
+      if (!allowed(code)) return Status.BAD_KEYCODE;
+    }
+    return Status.OK;
   }
 
   async transact(report: Uint8Array): Promise<Uint8Array> {
@@ -125,7 +177,7 @@ export class MockTransport implements DeviceTransport {
 
   private reply(req: RequestPacket, status: Status): Uint8Array {
     const resp: ResponsePacket = {
-      command: req.command,
+      command: withResponseBit(req.command),
       transactionId: req.transactionId,
       status,
       objectId: req.objectId,
@@ -137,7 +189,8 @@ export class MockTransport implements DeviceTransport {
 
   private handle(req: RequestPacket): ResponsePacket {
     const base = {
-      command: req.command,
+      // R3: the response MUST carry the response bit, like firmware.
+      command: withResponseBit(req.command),
       transactionId: req.transactionId,
       objectId: req.objectId,
       offset: req.offset,
@@ -179,7 +232,9 @@ export class MockTransport implements DeviceTransport {
         d[19] = 126; // rgb positions
         d[20] = 0x00; // max animation bytes low (512)
         d[21] = 0x02;
-        d[22] = 0x1f; // capability bits low
+        // R7: capability bits from the ONE shared source (must match
+        // GET_CAPABILITIES).
+        d[22] = 0x01; // dynamicKeymap only
         d[23] = 0x00;
         return ok(d);
       }
@@ -208,38 +263,39 @@ export class MockTransport implements DeviceTransport {
       }
 
       case Cmd.BEGIN_STAGE: {
+        // R1: firmware accepts ONLY CFG_OBJECT_KEYMAP for staging.
+        if (req.objectId !== ObjectId.KEYMAP) return fail(Status.BAD_OBJECT);
         const live = this.store.get(req.objectId);
         if (!live) return fail(Status.BAD_OBJECT);
-        if (this.rejectUnknownObjects && !this.store.has(req.objectId)) {
-          return fail(Status.BAD_OBJECT);
-        }
-        // M3-04: snapshot the LIVE object into the stage buffer.
-        this.staged.set(req.objectId, new Uint8Array(live));
-        this.stageActive = true;
+        // snapshot the LIVE object into the single staged buffer
+        this.stageObject = req.objectId;
+        this.stagedData = new Uint8Array(live);
         this.stageValidated = false;
         return ok();
       }
 
       case Cmd.WRITE_CHUNK: {
-        // M3-04: stage buffer only — never the live store. The
-        // active check comes FIRST (firmware parity: NOT_STAGED, not
+        // R1: stage buffer only — never the live store. The active
+        // check comes FIRST (firmware parity: NOT_STAGED, not
         // BAD_OBJECT, when no stage is open).
-        if (!this.stageActive) return fail(Status.NOT_STAGED);
-        const st = this.staged.get(req.objectId);
-        if (!st) return fail(Status.BAD_OBJECT);
-        if (req.offset + req.payload.length > st.length) {
+        if (this.stageObject !== req.objectId || this.stagedData === null) {
+          return fail(Status.NOT_STAGED);
+        }
+        if (req.offset + req.payload.length > this.stagedData.length) {
           return fail(Status.BAD_OFFSET);
         }
-        st.set(req.payload, req.offset);
+        this.stagedData.set(req.payload, req.offset);
         this.stageValidated = false;
         return ok();
       }
 
       case Cmd.VALIDATE_STAGE: {
-        if (!this.stageActive) return fail(Status.NOT_STAGED);
-        // M3-04: validate the staged buffer (mirrors firmware allowlist
-        // via the keycode catalogue — the mock validates length only;
-        // keycode-level validation is the C harness's job).
+        // R1: real keymap validation, like firmware.
+        if (this.stageObject !== req.objectId || this.stagedData === null) {
+          return fail(Status.NOT_STAGED);
+        }
+        const status = this.validateKeymap(this.stagedData);
+        if (status !== Status.OK) return fail(status);
         this.stageValidated = true;
         return ok();
       }
@@ -247,13 +303,14 @@ export class MockTransport implements DeviceTransport {
       case Cmd.APPLY_STAGE: {
         if (this.fault === "busy") return fail(Status.BUSY);
         // active/validated checks FIRST (firmware parity)
-        if (!this.stageActive) return fail(Status.NOT_STAGED);
+        if (this.stageObject !== req.objectId || this.stagedData === null) {
+          return fail(Status.NOT_STAGED);
+        }
         if (!this.stageValidated) return fail(Status.NOT_STAGED);
-        const st = this.staged.get(req.objectId);
-        if (!st) return fail(Status.BAD_OBJECT);
-        // M3-04: copy stage to live, then discard the stage.
-        this.store.set(req.objectId, new Uint8Array(st));
-        this.stageActive = false;
+        // copy stage to live, then discard the stage
+        this.store.set(req.objectId, new Uint8Array(this.stagedData));
+        this.stageObject = null;
+        this.stagedData = null;
         this.stageValidated = false;
         return ok();
       }
@@ -271,8 +328,9 @@ export class MockTransport implements DeviceTransport {
       }
 
       case Cmd.ABORT_STAGE:
-        // M3-04: discard the stage; live store untouched.
-        this.stageActive = false;
+        // R1: discard the staged object; live store untouched.
+        this.stageObject = null;
+        this.stagedData = null;
         this.stageValidated = false;
         return ok();
 

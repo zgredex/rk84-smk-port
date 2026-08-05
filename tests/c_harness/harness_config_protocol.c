@@ -17,8 +17,61 @@
 #include <stdbool.h>
 
 #include "harness_stubs.h"
+
+/* report.h REPORT_ID_* constants (the harness references ISP). */
+#ifndef REPORT_ID_ISP
+#define REPORT_ID_ISP 5u
+#endif
+
 #include "config_protocol.c"
 #include "dynamic_keymap.c"
+
+/* ---- EP0 transfer state machine (R2 audit) ---------------------------
+ * Stub the EP0 transfer globals + the real step_ep0_in_xfer() logic
+ * (copied from usb.c so the packet-count/state decisions are tested). */
+#define EP0_BUF_SIZE 8u
+uint16_t ep0_xfer_bytes_left;
+uint8_t *ep0_xfer_src;
+uint8_t ep0_buffer[EP0_BUF_SIZE];
+uint8_t ep0_count;
+uint8_t ep0_state; /* 0 = DEFAULT, 1 = IN_DATA, 2 = RECV_STATUS */
+
+static void set_ep0_in_buffer(uint8_t *src, uint8_t len)
+{
+    for (uint8_t i = 0; i < len && i < EP0_BUF_SIZE; i++) {
+        ep0_buffer[i] = src[i];
+    }
+}
+
+static void setup_ep0_in_xfer(uint8_t *src, uint16_t len)
+{
+    ep0_xfer_src = src;
+    ep0_xfer_bytes_left = len;
+}
+
+/* Mirror of usb.c's step_ep0_in_xfer. */
+static void step_ep0_in_xfer(void)
+{
+    if (ep0_xfer_bytes_left == 0) {
+        ep0_state = 2; /* RECV_STATUS */
+        ep0_count = 0;
+    } else if (ep0_xfer_bytes_left > EP0_BUF_SIZE) {
+        ep0_state = 1; /* IN_DATA */
+        set_ep0_in_buffer(ep0_xfer_src, EP0_BUF_SIZE);
+        ep0_xfer_bytes_left -= EP0_BUF_SIZE;
+        ep0_xfer_src += EP0_BUF_SIZE;
+        ep0_count = EP0_BUF_SIZE;
+    } else if (ep0_xfer_bytes_left == EP0_BUF_SIZE) {
+        ep0_state = 1; /* IN_DATA */
+        set_ep0_in_buffer(ep0_xfer_src, EP0_BUF_SIZE);
+        ep0_xfer_bytes_left = 0;
+        ep0_count = EP0_BUF_SIZE;
+    } else {
+        ep0_state = 2; /* RECV_STATUS */
+        set_ep0_in_buffer(ep0_xfer_src, ep0_xfer_bytes_left);
+        ep0_count = (uint8_t)ep0_xfer_bytes_left;
+    }
+}
 
 /* Compiled default keymap (stub): needed by the locked-Fn validation
  * in staging VALIDATE. Fn (5,9) = MO(1) on base, transparent on Fn
@@ -216,14 +269,19 @@ static void test_write_not_staged(void)
 static void test_write_locked_fn_rejected(void)
 {
     uint8_t r[32];
-    /* Fn at (5,9): index = 5*16*2 + 9*2 = 178 */
+    /* Fn at (5,9): index = 5*16*2 + 9*2 = 178. R4: WRITE is byte-copy
+     * (OK); VALIDATE rejects the changed Fn value. */
     uint8_t payload[2] = { 0x04, 0x00 }; /* KC_A — wrong value for Fn */
     make_request(r, CFG_CMD_BEGIN_STAGE, 10, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     run_request(r);
     make_request(r, CFG_CMD_WRITE_CHUNK, 10, 0, CFG_OBJECT_KEYMAP, 178, payload, 2);
     uint8_t *resp = run_request(r);
+    CHECK(resp != NULL && resp[3] == CFG_STATUS_OK,
+          "write changed Fn bytes accepted (byte-copy)");
+    make_request(r, CFG_CMD_VALIDATE_STAGE, 10, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_BAD_KEYCODE,
-          "write changed value to locked Fn rejected");
+          "validate rejects changed value to locked Fn");
 }
 
 static void test_write_locked_fn_idempotent(void)
@@ -242,13 +300,18 @@ static void test_write_locked_fn_idempotent(void)
 static void test_write_bad_keycode_rejected(void)
 {
     uint8_t r[32];
+    /* R4: WRITE accepts 0xFFFF bytes; VALIDATE rejects them. */
     uint8_t payload[2] = { 0xFF, 0xFF }; /* 0xFFFF not allowed */
     make_request(r, CFG_CMD_BEGIN_STAGE, 12, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     run_request(r);
     make_request(r, CFG_CMD_WRITE_CHUNK, 12, 0, CFG_OBJECT_KEYMAP, 0, payload, 2);
     uint8_t *resp = run_request(r);
+    CHECK(resp != NULL && resp[3] == CFG_STATUS_OK,
+          "write invalid keycode bytes accepted (byte-copy)");
+    make_request(r, CFG_CMD_VALIDATE_STAGE, 12, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_BAD_KEYCODE,
-          "write invalid keycode rejected");
+          "validate rejects invalid keycode");
 }
 
 static void test_write_out_of_bounds(void)
@@ -290,16 +353,20 @@ static void test_abort_stage(void)
 static void test_valid_then_invalid_cell_nothing_live(void)
 {
     uint8_t r[32];
-    /* Write KC_C (valid) at offset 0, then 0xFFFF (invalid) at offset 2.
-     * Neither may become live: the chunk is rejected, live map keeps
-     * defaults. */
+    /* R4 (audit): WRITE accepts valid+invalid bytes (byte-copy only);
+     * VALIDATE rejects the invalid cell; the live map stays default. */
     uint8_t payload[4] = { 0x06, 0x00, 0xFF, 0xFF };
     make_request(r, CFG_CMD_BEGIN_STAGE, 21, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     run_request(r);
     make_request(r, CFG_CMD_WRITE_CHUNK, 21, 0, CFG_OBJECT_KEYMAP, 0, payload, 4);
     uint8_t *resp = run_request(r);
+    CHECK(resp != NULL && resp[3] == CFG_STATUS_OK,
+          "write with invalid cell bytes accepted (byte-copy only)");
+
+    make_request(r, CFG_CMD_VALIDATE_STAGE, 21, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_BAD_KEYCODE,
-          "chunk with invalid cell rejected");
+          "validate rejects the invalid cell");
 
     make_request(r, CFG_CMD_READ_OBJECT, 22, 0, CFG_OBJECT_KEYMAP, 0, NULL, 2);
     resp = run_request(r);
@@ -308,22 +375,25 @@ static void test_valid_then_invalid_cell_nothing_live(void)
           "valid cell before invalid did NOT become live (still KC_A)");
 }
 
-static void test_split_keycode_across_chunks(void)
+static void test_split_keycode_high_first(void)
 {
     uint8_t r[32];
-    /* A 16-bit keycode with a nonzero high byte: KC_SYSTEM_POWER = 0x00A5.
-     * Chunk 1: low byte at offset 0. Chunk 2: high byte at offset 1. */
-    uint8_t lo[1] = { 0xA5 };
-    uint8_t hi[1] = { 0x00 };
+    /* R4 (audit): a 16-bit keycode with a NONZERO high byte, sent
+     * HIGH BYTE FIRST. The firmware must not judge the temporary
+     * half-updated cell: WRITE is byte-copy, VALIDATE assembles.
+     * MO(1) = 0x5221 at an unlocked cell (row 1, col 0 -> idx 32). */
+    uint8_t hi[1] = { 0x52 };
+    uint8_t lo[1] = { 0x21 };
+    uint16_t idx = 32; /* (1,0,0): layer 1, row 0, col 0 */
     make_request(r, CFG_CMD_BEGIN_STAGE, 23, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     run_request(r);
-    make_request(r, CFG_CMD_WRITE_CHUNK, 23, 0, CFG_OBJECT_KEYMAP, 0, lo, 1);
+    make_request(r, CFG_CMD_WRITE_CHUNK, 23, 0, CFG_OBJECT_KEYMAP, idx + 1, hi, 1);
     uint8_t *resp = run_request(r);
-    CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "chunk 1 (low byte) OK");
-    make_request(r, CFG_CMD_WRITE_CHUNK, 23, 0, CFG_OBJECT_KEYMAP, 1, hi, 1);
-    resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK,
-          "chunk 2 (high byte) validates completed cell OK");
+          "high byte first accepted (no premature validation)");
+    make_request(r, CFG_CMD_WRITE_CHUNK, 23, 0, CFG_OBJECT_KEYMAP, idx, lo, 1);
+    resp = run_request(r);
+    CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "low byte accepted");
 
     /* validate + apply, then read back the full keycode */
     make_request(r, CFG_CMD_VALIDATE_STAGE, 23, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
@@ -333,11 +403,11 @@ static void test_split_keycode_across_chunks(void)
     resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "apply split keycode OK");
 
-    make_request(r, CFG_CMD_READ_OBJECT, 24, 0, CFG_OBJECT_KEYMAP, 0, NULL, 2);
+    make_request(r, CFG_CMD_READ_OBJECT, 24, 0, CFG_OBJECT_KEYMAP, idx, NULL, 2);
     resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "read split keycode OK");
-    CHECK(resp[8] == 0xA5 && resp[9] == 0x00,
-          "split keycode reassembled (KC_SYSTEM_POWER 0x00A5)");
+    CHECK(resp[8] == 0x21 && resp[9] == 0x52,
+          "high-first split keycode reassembled (MO(1) 0x5221)");
 }
 
 static void test_commit_not_supported_yet(void)
@@ -400,7 +470,7 @@ static void test_rx_accumulation_partial(void)
 {
     /* M3-05: append returns FALSE until exactly 32 bytes arrive. */
     uint8_t pkt[8] = { 0x08, 0, 0, 0, 0, 0, 0, 0 };
-    config_rx_begin();
+    config_rx_force_reset();
     CHECK(config_rx_append(pkt, 8) == false, "first 8B append not complete");
     CHECK(config_rx_pending() == false, "not pending after 8B");
     CHECK(config_rx_append(pkt, 8) == false, "16B append not complete");
@@ -417,12 +487,12 @@ static void test_rx_reject_wrong_lengths(void)
      * wLength != 32 at the USB layer; at the mailbox layer, oversize
      * accumulation is reset and short transfers never complete. */
     uint8_t pkt[8] = { 0x08, 0, 0, 0, 0, 0, 0, 0 };
-    config_rx_begin();
+    config_rx_force_reset();
     config_rx_append(pkt, 8);
     config_rx_append(pkt, 8);
     /* abort mid-transfer (e.g. host sends a new SETUP): the mailbox
      * must be clean for the next request */
-    config_rx_begin();
+    config_rx_force_reset();
     CHECK(config_rx_pending() == false, "abort mid-transfer clears mailbox");
     /* now a full valid transfer completes */
     config_rx_append(pkt, 8);
@@ -437,7 +507,7 @@ static void test_rx_oversize_reset(void)
     /* M3-05: appending more than 32 bytes total resets the mailbox
      * (corrupt accumulation) rather than overrunning. */
     uint8_t pkt[8] = { 0x08, 0, 0, 0, 0, 0, 0, 0 };
-    config_rx_begin();
+    config_rx_force_reset();
     config_rx_append(pkt, 8);
     config_rx_append(pkt, 8);
     config_rx_append(pkt, 8);
@@ -446,6 +516,103 @@ static void test_rx_oversize_reset(void)
     /* further append while pending is dropped */
     CHECK(config_rx_append(pkt, 8) == false, "append while pending dropped");
     config_rx_release();
+}
+
+/* ---- R2: request validators ------------------------------------------ */
+
+static void test_set_report_valid(void)
+{
+    uint8_t  type = REPORT_TYPE_FEATURE;
+    uint8_t  id   = REPORT_ID_SMK84_CONFIG;
+    uint16_t iface = 1;
+    uint16_t len  = CONFIG_REPORT_TOTAL_SIZE;
+    CHECK(config_set_report_valid(type, id, iface, len) == true,
+          "valid SET_REPORT accepted");
+
+    CHECK(config_set_report_valid(type, id, iface, 31) == false,
+          "wLength 31 -> reject");
+    CHECK(config_set_report_valid(type, id, iface, 33) == false,
+          "wLength 33 -> reject");
+    CHECK(config_set_report_valid(type, id, 0, len) == false,
+          "wIndex 0 -> reject");
+    CHECK(config_set_report_valid(REPORT_TYPE_OUTPUT, id, iface, len) == false,
+          "output type -> reject");
+    CHECK(config_set_report_valid(type, REPORT_ID_ISP, iface, len) == false,
+          "ISP id -> reject");
+}
+
+static void test_get_report_valid(void)
+{
+    uint8_t  type = REPORT_TYPE_FEATURE;
+    uint8_t  id   = REPORT_ID_SMK84_CONFIG;
+    uint16_t iface = 1;
+    uint16_t len  = CONFIG_REPORT_TOTAL_SIZE;
+    CHECK(config_get_report_valid(type, id, iface, len) == true,
+          "valid GET_REPORT accepted");
+    CHECK(config_get_report_valid(type, id, 0, len) == false,
+          "GET_REPORT wIndex 0 -> reject");
+    CHECK(config_get_report_valid(type, id, iface, 3) == true,
+          "GET_REPORT short wLength still valid");
+    CHECK(config_get_report_valid(type, REPORT_ID_ISP, iface, len) == false,
+          "GET_REPORT ISP id -> reject");
+}
+
+/* ---- R2: EP0 transfer state machine ----------------------------------- */
+
+static void test_get_report_32_bytes(void)
+{
+    uint8_t response[32];
+    for (uint8_t i = 0; i < 32; i++) response[i] = 0x5a;
+
+    setup_ep0_in_xfer(response, 32);
+    step_ep0_in_xfer();
+
+    CHECK(ep0_count == 8, "first packet is 8 bytes");
+    CHECK(ep0_buffer[0] == 0x5a && ep0_buffer[7] == 0x5a,
+          "first packet preloaded before endpoint ready");
+    CHECK(ep0_state == 1, "32-byte transfer remains in IN_DATA");
+    CHECK(ep0_xfer_bytes_left == 24, "24 bytes remain after first packet");
+}
+
+static void test_get_report_short_read(void)
+{
+    uint8_t response[32];
+    for (uint8_t i = 0; i < 32; i++) response[i] = 0x5a;
+
+    setup_ep0_in_xfer(response, 3);
+    step_ep0_in_xfer();
+
+    CHECK(ep0_count == 3, "short response sends requested bytes");
+    CHECK(ep0_state == 2, "short response advances directly to RECV_STATUS");
+    /* usb.c's else branch (< 8) sets the count but leaves bytes_left
+     * untouched; the transfer is complete because state is RECV_STATUS
+     * (subsequent IN IRQs take the RECV_STATUS path). */
+    CHECK(ep0_state == 2, "short read completes via RECV_STATUS");
+}
+
+static void test_get_report_exact_packet_sequence(void)
+{
+    /* R2: 32 bytes reconstruct as four exact 8-byte packets. */
+    uint8_t response[32];
+    uint8_t out[32];
+    uint8_t got = 0;
+    for (uint8_t i = 0; i < 32; i++) response[i] = (uint8_t)(i + 1);
+
+    setup_ep0_in_xfer(response, 32);
+    while (ep0_xfer_bytes_left > 0 || got < 32) {
+        step_ep0_in_xfer();
+        if (ep0_count == 0) break;
+        for (uint8_t i = 0; i < ep0_count; i++) out[got++] = ep0_buffer[i];
+        if (ep0_state == 2) break; /* short/status */
+        setup_ep0_in_xfer(ep0_xfer_src, ep0_xfer_bytes_left); /* next packet */
+    }
+
+    CHECK(got == 32, "exactly 32 bytes transferred");
+    int ok = 1;
+    for (uint8_t i = 0; i < 32; i++) {
+        if (out[i] != response[i]) ok = 0;
+    }
+    CHECK(ok == 1, "four 8-byte packets reconstruct the report exactly");
 }
 
 int main(void)
@@ -466,7 +633,7 @@ int main(void)
     test_write_out_of_bounds();
     test_abort_stage();
     test_valid_then_invalid_cell_nothing_live();
-    test_split_keycode_across_chunks();
+    test_split_keycode_high_first();
     test_commit_not_supported_yet();
     test_bootloader_guarded();
     test_diagnostics();
@@ -474,6 +641,11 @@ int main(void)
     test_rx_accumulation_partial();
     test_rx_reject_wrong_lengths();
     test_rx_oversize_reset();
+    test_set_report_valid();
+    test_get_report_valid();
+    test_get_report_32_bytes();
+    test_get_report_short_read();
+    test_get_report_exact_packet_sequence();
     printf("---------------------------------\n");
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

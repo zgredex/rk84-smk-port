@@ -62,7 +62,7 @@ class DescriptorVerifierTests(unittest.TestCase):
             self.skipTest("RK84_DYNAMIC_IHX not set / missing")
         proc = run_tool("check-usb-descriptors.py", dyn, "--require-config")
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
-        self.assertIn("report ID 8 (SMK84 config): 31-byte Feature payload OK",
+        self.assertIn("report ID 8 (SMK84 config): FEATURE, 31-byte payload OK",
                       proc.stdout)
 
 

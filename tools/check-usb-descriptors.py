@@ -221,6 +221,13 @@ class DescriptorCheck:
     def payload_bytes_for(self, rid: int) -> int | None:
         """Payload bytes of report `rid`: track the current REPORT_ID
         and return size*count/8 at the first Main item for that ID."""
+        main = self.main_item_for(rid)
+        return None if main is None else main[1]
+
+    def main_item_for(self, rid: int) -> tuple[int, int] | None:
+        """R8 (audit): return (main-item tag, payload bytes) of the
+        FIRST Main item for report `rid` — so callers can verify the
+        item type (INPUT/OUTPUT/FEATURE), not just its size."""
         rng = self.find_report(rid)
         if rng is None:
             return None
@@ -237,7 +244,7 @@ class DescriptorCheck:
                 accum = size_bits * it.value
             elif it.tag in (HID_RI_INPUT, HID_RI_OUTPUT, HID_RI_FEATURE):
                 if cur_id == rid:
-                    return (accum + 7) // 8
+                    return it.tag, (accum + 7) // 8
         return None
 
     def checks(self):
@@ -278,19 +285,25 @@ class DescriptorCheck:
                 nkro_rng = rng
             print(f"report ID {rid} ({label}): present")
 
-        # M3-06 (audit): the config report ID 8 must be a 31-byte
-        # Feature (report ID + 31 payload = 32 total, EP0 4x8).
-        # Presence is only enforced when --require-config is passed
-        # (the rk84-dynamic build); otherwise the check runs only if
-        # the 0xFF60 collection is present in this binary.
+        # M3-06/R8 (audit): the config report ID 8 must be a 31-byte
+        # FEATURE report (report ID + 31 payload = 32 total, EP0 4x8) —
+        # and the Main item must actually be FEATURE, not a similarly
+        # sized INPUT/OUTPUT. Presence is only enforced when
+        # --require-config is passed (the rk84-dynamic build).
         cfg_rng = self.find_report(8)
         if self.require_config and cfg_rng is None:
             self.fail("report ID 8 (SMK84 config) not found (--require-config)")
         if cfg_rng is not None:
-            payload = self.payload_bytes_for(8)
-            if payload != 31:
-                self.fail(f"report ID 8 payload {payload} != 31 bytes")
-            print(f"report ID 8 (SMK84 config): {payload}-byte Feature payload OK")
+            main = self.main_item_for(8)
+            if main is None:
+                self.fail("report ID 8 has no Main item")
+            else:
+                main_tag, payload = main
+                if main_tag != HID_RI_FEATURE:
+                    self.fail(f"report ID 8 main item 0x{main_tag:02x} is not FEATURE")
+                if payload != 31:
+                    self.fail(f"report ID 8 payload {payload} != 31 bytes")
+                print(f"report ID 8 (SMK84 config): FEATURE, {payload}-byte payload OK")
 
         if nkro_rng is not None:
             items = parse_hid_items(nkro_rng)

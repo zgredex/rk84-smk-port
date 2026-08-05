@@ -10,6 +10,7 @@
 
 import {
   Cmd,
+  CMD_RESPONSE_BIT,
   Flags,
   ObjectId,
   Status,
@@ -88,11 +89,13 @@ export class ConfiguratorClient {
     const reply = await this.transport.transact(report);
     const resp = decodeResponse(unwrapReport(reply));
 
-    // identity validation: command echoed with response bit
-    if ((resp.command & 0x7f) !== (command & 0x7f)) {
+    // identity validation: command echoed WITH the response bit (R3 —
+    // the bit is required; a bare echo is a protocol error)
+    const expectedCommand = (command & 0x7f) | CMD_RESPONSE_BIT;
+    if (resp.command !== expectedCommand) {
       throw new ConfiguratorError(
         resp.status,
-        `response command 0x${resp.command.toString(16)} != request 0x${command.toString(16)}`,
+        `response command 0x${resp.command.toString(16)} != expected 0x${expectedCommand.toString(16)}`,
       );
     }
     if (resp.transactionId !== txid) {
@@ -216,16 +219,33 @@ export class ConfiguratorClient {
   }
 
   /** Full staged keymap upload: BEGIN -> WRITE xN -> VALIDATE -> APPLY.
-   * M3-03 (audit): the correct firmware staging workflow. */
+   * M3-03 (audit): the correct firmware staging workflow. R8 (audit):
+   * validates input length and aborts the stage on any failure so the
+   * live map is never left partially updated. */
   async writeKeymap(data: Uint16Array): Promise<void> {
+    if (data.length !== 2 * 6 * 16) {
+      throw new ConfiguratorError(
+        Status.BAD_LENGTH,
+        `keymap has ${data.length} cells; expected ${2 * 6 * 16}`,
+      );
+    }
     const raw = new Uint8Array(data.length * 2);
     for (let i = 0; i < data.length; i++) {
       raw[i * 2] = data[i] & 0xff;
       raw[i * 2 + 1] = (data[i] >> 8) & 0xff;
     }
     await this.beginStage(ObjectId.KEYMAP);
-    await this.writeChunk(ObjectId.KEYMAP, 0, raw);
-    await this.validateStage(ObjectId.KEYMAP);
-    await this.applyStage(ObjectId.KEYMAP);
+    try {
+      await this.writeChunk(ObjectId.KEYMAP, 0, raw);
+      await this.validateStage(ObjectId.KEYMAP);
+      await this.applyStage(ObjectId.KEYMAP);
+    } catch (error) {
+      try {
+        await this.abortStage(ObjectId.KEYMAP);
+      } catch {
+        /* Preserve the original protocol error. */
+      }
+      throw error;
+    }
   }
 }

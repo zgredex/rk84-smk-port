@@ -12,6 +12,9 @@
 #include "dynamic_keymap.h"
 #include "kbdef.h"
 #include "layout.h"   /* keymaps[][][] for locked-Fn required values */
+#if SMK_CONFIG_PROTOCOL
+#include "usbdef.h"   /* REPORT_TYPE_FEATURE for the R2 validators */
+#endif
 
 #if SMK_CONFIG_PROTOCOL
 
@@ -44,10 +47,27 @@ static __xdata uint8_t diag_malformed;
 static __xdata uint8_t diag_unknown_cmd;
 static __xdata uint8_t diag_retry;
 
-void config_rx_begin(void)
+bool config_rx_start(void)
+{
+    /* R5: a complete request is owned by the main loop until release.
+     * Refuse a new transfer rather than clobbering it. */
+    if (config_rx.pending) {
+        return false;
+    }
+    /* No complete request: discard any abandoned partial transfer. */
+    config_rx.length = 0;
+    return true;
+}
+
+void config_rx_force_reset(void)
 {
     config_rx.pending = 0;
     config_rx.length = 0;
+}
+
+void config_tx_invalidate(void)
+{
+    config_tx.length = 0;
 }
 
 bool config_rx_append(const uint8_t *pkt, uint8_t len)
@@ -187,6 +207,44 @@ static void build_response(uint8_t command, uint8_t txid, uint8_t status,
     config_cache_set(r, config_tx.length, config_last_req, CONFIG_REPORT_DATA_SIZE);
 }
 
+/* ---- capabilities (R7 audit: single source of truth) ---------------- */
+
+static void config_get_capabilities(uint8_t out[4])
+{
+    out[0] = 0;
+    out[1] = 0;
+    out[2] = 0;
+    out[3] = 0;
+#if SMK_DYNAMIC_KEYMAP
+    out[0] |= 0x01; /* dynamicKeymap */
+#endif
+    /* Future milestones set their bits here when implemented:
+     * 0x02 static RGB, 0x04 built-in effects, 0x08 custom VM,
+     * 0x10 reactive effects. */
+}
+
+/* ---- HID request validation (R2 audit) ------------------------------- */
+
+bool config_set_report_valid(
+    uint8_t report_type, uint8_t report_id,
+    uint16_t interface, uint16_t length)
+{
+    return report_type == REPORT_TYPE_FEATURE &&
+           report_id == REPORT_ID_SMK84_CONFIG &&
+           interface == 1 &&
+           length == CONFIG_REPORT_TOTAL_SIZE;
+}
+
+bool config_get_report_valid(
+    uint8_t report_type, uint8_t report_id,
+    uint16_t interface, uint16_t length)
+{
+    (void)length;
+    return report_type == REPORT_TYPE_FEATURE &&
+           report_id == REPORT_ID_SMK84_CONFIG &&
+           interface == 1;
+}
+
 /* ---- command dispatch ------------------------------------------------- */
 
 static void handle_request(const uint8_t *req)
@@ -218,6 +276,7 @@ static void handle_request(const uint8_t *req)
 
         case CFG_CMD_GET_DEVICE_INFO: {
             __xdata uint8_t d[24] = { 0 };
+            __xdata uint8_t caps[4];
             const char *name = "rk84-smk";
             uint8_t i = 0;
             for (; name[i] && i < 12; i++) d[i] = (uint8_t)name[i];
@@ -231,22 +290,19 @@ static void handle_request(const uint8_t *req)
             d[19] = 126;  /* rgb positions */
             d[20] = 0x00; /* max animation bytes lo (512) */
             d[21] = 0x02;
-            d[22] = 0x1F; /* capability bits lo */
-            d[23] = 0x00;
+            /* R7 (audit): capability bits from the ONE shared source —
+             * no more advertising unimplemented features here. */
+            config_get_capabilities(caps);
+            d[22] = caps[0];
+            d[23] = caps[1];
             build_response(command, txid, status, object, offset, d, 24);
             break;
         }
 
         case CFG_CMD_GET_CAPABILITIES: {
-            /* M3-07 (audit): advertise ONLY what is actually
-             * implemented. M3 supports the dynamic keymap + RAM
-             * staging; RGB/VM/macros/wireless are future milestones.
-             * The mask is built from compile-time feature defines so
-             * it stays honest as milestones land. */
-            __xdata uint8_t c[4] = { 0x00, 0x00, 0x00, 0x00 };
-#if SMK_DYNAMIC_KEYMAP
-            c[0] |= 0x01; /* dynamicKeymap */
-#endif
+            /* R7 (audit): one capability source shared with DEVICE_INFO. */
+            __xdata uint8_t c[4];
+            config_get_capabilities(c);
             build_response(command, txid, status, object, offset, c, 4);
             break;
         }
@@ -316,6 +372,11 @@ static void handle_request(const uint8_t *req)
         }
 
         case CFG_CMD_WRITE_CHUNK: {
+            /* R4 (audit): byte-copy into the stage ONLY. No keycode
+             * interpretation here — the stage is not live, and a
+             * half-updated cell (high byte first, or low byte pending)
+             * must not be judged as a temporary keycode. VALIDATE_STAGE
+             * is the sole place that interprets keycodes. */
             if (object != CFG_OBJECT_KEYMAP) {
                 build_response(command, txid, CFG_STATUS_BAD_OBJECT, object, offset, NULL, 0);
                 break;
@@ -328,30 +389,8 @@ static void handle_request(const uint8_t *req)
                 build_response(command, txid, CFG_STATUS_BAD_OFFSET, object, offset, NULL, 0);
                 break;
             }
-            /* M3-02 (audit): mutate the STAGE buffer ONLY — never the
-             * live map. Payload is u16 LE: even idx = low byte, odd idx
-             * = high byte. A cell is COMPLETE at the odd idx (both bytes
-             * in the stage); validate the completed value there. If an
-             * odd byte arrives without its even byte, it stays staged
-             * but unvalidated until the next chunk or VALIDATE_STAGE. */
             for (uint8_t i = 0; i < plen; i++) {
-                uint16_t idx = (uint16_t)offset + i;
-                config_stage_buf[idx] = payload[i];
-                if (!(idx & 1u)) {
-                    continue; /* low byte only: cell not complete yet */
-                }
-                uint8_t layer = (uint8_t)(idx / (6u * 16u * 2u));
-                uint32_t rem = idx % (6u * 16u * 2u);
-                uint8_t row = (uint8_t)(rem / (16u * 2u));
-                uint8_t col = (uint8_t)((rem / 2u) % 16u);
-                uint16_t code = (uint16_t)config_stage_buf[idx - 1] |
-                                ((uint16_t)config_stage_buf[idx] << 8);
-                config_status_t st = dynamic_keymap_validate_cell(
-                    layer, row, col, code);
-                if (st != CFG_STATUS_OK) {
-                    build_response(command, txid, (uint8_t)st, object, offset, NULL, 0);
-                    return;
-                }
+                config_stage_buf[offset + i] = payload[i];
             }
             config_stage.validated = 0;
             build_response(command, txid, status, object, offset, NULL, 0);

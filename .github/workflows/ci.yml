@@ -160,7 +160,7 @@ jobs:
           python3 $PWD/tools/check-usb-descriptors.py \
             smk/${{ matrix.dir }}/royalkludge-rk84_default_smk.hex \
             --require-config \
-            | grep 'report ID 8 (SMK84 config): 31-byte Feature payload OK'
+            | grep 'report ID 8 (SMK84 config): FEATURE, 31-byte payload OK'
 
       - name: Build manifest
         run: |

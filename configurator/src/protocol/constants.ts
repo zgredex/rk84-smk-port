@@ -111,3 +111,11 @@ export function statusName(s: Status): string {
 export function cmdName(c: Cmd): string {
   return Cmd[c] ?? `CMD_UNKNOWN(${c})`;
 }
+
+/**
+ * RK84 custom keycodes (mirrors kbdef.h: SAFE_RANGE = 0x5200 + enum).
+ * Used by the mock's keymap validation (R1).
+ */
+export const SAFE_RANGE = 0x5200;
+export const RGB_BRI_UP = SAFE_RANGE;
+export const RGB_BRI_DN = SAFE_RANGE + 1;

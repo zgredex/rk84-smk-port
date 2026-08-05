@@ -118,7 +118,7 @@ index ac8b5fb..d58d840 100644
  }
  
 diff --git a/src/platform/sh68f90a/usb.c b/src/platform/sh68f90a/usb.c
-index 4244b76..ce7866a 100644
+index 4244b76..15e248e 100644
 --- a/src/platform/sh68f90a/usb.c
 +++ b/src/platform/sh68f90a/usb.c
 @@ -8,9 +8,27 @@
@@ -271,15 +271,16 @@ index 4244b76..ce7866a 100644
  static void usb_hid_set_report_handler(__xdata struct usb_req_setup *req);
  static void usb_hid_set_idle_handler(__xdata struct usb_req_setup *req);
  static void usb_hid_get_idle_handler();
-@@ -364,6 +404,20 @@ void usb_init()
+@@ -364,6 +404,21 @@ void usb_init()
      ep0_xfer_bytes_left = 0;
      ep0_xfer_src        = 0;
  
 +#if SMK_CONFIG_PROTOCOL
-+    /* M3-05 (audit): a partial config report must not survive a bus
-+     * reset / re-enumeration — it would contaminate the next valid
-+     * SET_REPORT. Fresh accumulation on every reset. */
-+    config_rx_begin();
++    /* R5/M3-05 (audit): a partial config report must not survive a bus
++     * reset / re-enumeration, and the prepared TX response must not be
++     * served after a reset. Force-reset both. */
++    config_rx_force_reset();
++    config_tx_invalidate();
 +#endif
 +
 +#ifdef RK84_USB_HOOKS
@@ -292,7 +293,7 @@ index 4244b76..ce7866a 100644
      USBADDR = 0;
      USBIE1  = (_OVERIE | _SETUPIE | _SOFIA | _RESMIE | _SUSPIE | _PBRSTIE);
      USBIE2  = (_OEP0IE | _IEP0IE);
-@@ -402,14 +456,27 @@ void usb_send_nkro(__xdata report_nkro_t *report)
+@@ -402,14 +457,27 @@ void usb_send_nkro(__xdata report_nkro_t *report)
  void usb_send_extra(__xdata report_extra_t *report)
  {
      uint8_t timeout = 0;
@@ -322,7 +323,7 @@ index 4244b76..ce7866a 100644
      SET_EP2_IN_RDY;
  }
  
-@@ -575,7 +642,7 @@ static void usb_setup_irq()
+@@ -575,7 +643,7 @@ static void usb_setup_irq()
          case (USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_IFACE):
              switch (request) {
                  case USB_HID_REQ_GET_REPORT:
@@ -331,7 +332,7 @@ index 4244b76..ce7866a 100644
                      break;
  
                  case USB_HID_REQ_GET_IDLE:
-@@ -599,11 +666,32 @@ static void usb_setup_irq()
+@@ -599,11 +667,32 @@ static void usb_setup_irq()
      }
  }
  
@@ -365,7 +366,7 @@ index 4244b76..ce7866a 100644
      if (temp_usbif1 != 0x00) {
          if (temp_usbif1 & _SOFIF) {
              USBIF1 &= ~_SOFIF;
-@@ -620,8 +708,14 @@ void usb_interrupt_handler() __interrupt(_INT_USB)
+@@ -620,8 +709,14 @@ void usb_interrupt_handler() __interrupt(_INT_USB)
                  usb_setup_irq();
              } else if (temp_usbif1 & _RESMIF) { // RESMIF
                  USBIF1 &= ~_RESMIF;
@@ -380,7 +381,7 @@ index 4244b76..ce7866a 100644
              } else if (temp_usbif1 & _USBRSTIF) { // BUSRSTIF
                  USBIF1 &= ~_USBRSTIF;
  
-@@ -761,8 +855,19 @@ static void usb_set_configuration_handler(__xdata struct usb_req_setup *req)
+@@ -761,8 +856,19 @@ static void usb_set_configuration_handler(__xdata struct usb_req_setup *req)
  
              if (active_configuration != 0) {
                  usb_device_state = USB_DEVICE_STATE_CONFIGURED;
@@ -400,7 +401,7 @@ index 4244b76..ce7866a 100644
              }
  
              CLEAR_EP0_CNT;
-@@ -991,8 +1096,31 @@ static void usb_get_interface_handler()
+@@ -991,8 +1097,37 @@ static void usb_get_interface_handler()
      SET_EP0_IN_RDY;
  }
  
@@ -409,44 +410,55 @@ index 4244b76..ce7866a 100644
  {
 +    (void)req;
 +#if SMK_CONFIG_PROTOCOL
-+    /* GET_REPORT (report ID 8): return the prepared 32-byte config
-+     * response. M3-01 (audit): must call step_ep0_in_xfer() BEFORE
-+     * arming EP0 IN so the first IN token serves the first 8 bytes of
-+     * the response (not stale buffer contents), then set up the state
-+     * machine for the remaining 3 packets. */
-+    if (req->wValue == (REPORT_TYPE_FEATURE << 8 | REPORT_ID_SMK84_CONFIG)) {
++    /* GET_REPORT (report ID 8, interface 1): return the prepared
++     * 32-byte config response. R6/R2 (audit): requires wIndex == 1 via
++     * the shared validator and must NOT overwrite usb_ep0_state after
++     * step_ep0_in_xfer() — that function selects IN_DATA for
++     * multi-packet transfers and RECV_STATUS for short reads. */
++    if (config_get_report_valid(
++            (uint8_t)(req->wValue >> 8),
++            (uint8_t)(req->wValue & 0xff),
++            req->wIndex, req->wLength)) {
 +        uint8_t len;
 +        const uint8_t *resp = config_tx_get(&len);
-+        if (resp != NULL && len > 0) {
-+            uint16_t xfer_len = len;
-+            if (req->wLength < xfer_len) {
-+                xfer_len = req->wLength; /* host asked for less */
-+            }
-+            setup_ep0_in_xfer((uint8_t *)resp, xfer_len);
-+            step_ep0_in_xfer(); /* load first packet before arming */
-+            usb_ep0_state = USB_EP0_STATE_IN_DATA;
-+            SET_EP0_IN_RDY;
++        if (resp == NULL || len == 0) {
++            /* R5: no prepared response (new request in flight) ->
++             * stall rather than serve a stale response. */
++            STALL_EP0();
 +            return;
 +        }
++        uint16_t xfer_len = len;
++        if (req->wLength < xfer_len) {
++            xfer_len = req->wLength; /* host asked for less */
++        }
++        setup_ep0_in_xfer((uint8_t *)resp, xfer_len);
++        step_ep0_in_xfer(); /* sets usb_ep0_state correctly */
++        SET_EP0_IN_RDY;
++        return;
 +    }
 +#endif
      STALL_EP0();
  }
  
-@@ -1012,7 +1140,22 @@ static void usb_hid_set_report_handler(__xdata struct usb_req_setup *req)
+@@ -1012,7 +1147,27 @@ static void usb_hid_set_report_handler(__xdata struct usb_req_setup *req)
                  usb_ep0_state = USB_EP0_STATE_ISP;
                  SET_EP0_OUT_RDY;
              }
 -
 +#if SMK_CONFIG_PROTOCOL
 +            else if ((req->wValue & 0xff) == REPORT_ID_SMK84_CONFIG) {
-+                /* M3-05 (audit): accept ONLY a full 32-byte report
-+                 * (report ID + 31 payload) to the extra HID interface
-+                 * (wIndex == 1). Anything else is stalled. A fresh
-+                 * accumulation is started so a partial/aborted previous
-+                 * transfer cannot contaminate this one. */
-+                if (req->wIndex == 1 && req->wLength == CONFIG_REPORT_TOTAL_SIZE) {
-+                    config_rx_begin();
++                /* M3-05/R5/R2 (audit): accept ONLY a full 32-byte report
++                 * to the extra HID interface (wIndex == 1), via the
++                 * shared testable validator. config_rx_start() refuses
++                 * when a complete request is still pending
++                 * (one-outstanding-transaction model) and the previous
++                 * TX response is invalidated. */
++                if (config_set_report_valid(
++                        (uint8_t)(req->wValue >> 8),
++                        (uint8_t)(req->wValue & 0xff),
++                        req->wIndex, req->wLength) &&
++                    config_rx_start()) {
++                    config_tx_invalidate();
 +                    usb_ep0_state = USB_EP0_STATE_CONFIG;
 +                    SET_EP0_OUT_RDY;
 +                } else {
@@ -457,7 +469,7 @@ index 4244b76..ce7866a 100644
              break;
  
          default:
-@@ -1077,6 +1220,17 @@ void usb_ep0_out_irq()
+@@ -1077,6 +1232,17 @@ void usb_ep0_out_irq()
          if (EP0_OUT_BUF[0] == 0x05 && EP0_OUT_BUF[1] == 0x75) {
              isp_jump();
          }
