@@ -43,6 +43,10 @@ EXPECT_SERIAL_INDEX = 0
 HID_RI_INPUT = 0x80
 HID_RI_OUTPUT = 0x90
 HID_RI_FEATURE = 0xB0
+
+# N7: the SMK84 config collection marker (usage page 0xFF60 vendor
+# application) — report ID 8 must live inside THIS collection.
+CONFIG_MARKER = b"\x06\x60\xff\x09\x01\xa1\x01"
 HID_RI_COLLECTION = 0xA0
 HID_RI_END_COLLECTION = 0xC0
 HID_RI_USAGE_PAGE = 0x04
@@ -114,7 +118,7 @@ class DescriptorCheck:
         self.errors: list[str] = []
         self.device: dict | None = None
         self.ep_mps: dict[int, int] = {}
-        self.report_ranges: list[bytes] = []
+        self.report_ranges: list[tuple[bytes, bytes]] = []
 
     def fail(self, msg: str):
         self.errors.append(msg)
@@ -174,7 +178,7 @@ class DescriptorCheck:
                 if err:
                     self.fail(f"HID report @0x{i:04X}: {err}")
                 elif rng is not None:
-                    self.report_ranges.append(rng)
+                    self.report_ranges.append((marker, rng))
                     print(f"HID report @0x{i:04X}: {len(rng)} bytes")
 
     def _slice_collection(self, start: int, marker_len: int):
@@ -212,8 +216,14 @@ class DescriptorCheck:
                 ids.add(it.value & 0xFF)
         return ids
 
-    def find_report(self, rid: int) -> bytes | None:
-        for rng in self.report_ranges:
+    def find_report(self, rid: int, required_marker: bytes | None = None) -> bytes | None:
+        """N7 (audit): find the collection range containing report `rid`,
+        optionally ONLY inside a collection opened by `required_marker`
+        (e.g. the 0xFF60 vendor collection) — so a report ID 8 placed
+        in the wrong collection cannot satisfy --require-config."""
+        for marker, rng in self.report_ranges:
+            if required_marker is not None and marker != required_marker:
+                continue
             if rid in self.report_ids(rng):
                 return rng
         return None
@@ -224,11 +234,12 @@ class DescriptorCheck:
         main = self.main_item_for(rid)
         return None if main is None else main[1]
 
-    def main_item_for(self, rid: int) -> tuple[int, int] | None:
-        """R8 (audit): return (main-item tag, payload bytes) of the
-        FIRST Main item for report `rid` — so callers can verify the
-        item type (INPUT/OUTPUT/FEATURE), not just its size."""
-        rng = self.find_report(rid)
+    def main_item_for(self, rid: int, required_marker: bytes | None = None) -> tuple[int, int] | None:
+        """R8/N7 (audit): return (main-item tag, payload bytes) of the
+        FIRST Main item for report `rid` — optionally restricted to a
+        specific collection marker — so callers can verify the item
+        type (INPUT/OUTPUT/FEATURE), not just its size."""
+        rng = self.find_report(rid, required_marker)
         if rng is None:
             return None
         items = parse_hid_items(rng)
@@ -285,18 +296,18 @@ class DescriptorCheck:
                 nkro_rng = rng
             print(f"report ID {rid} ({label}): present")
 
-        # M3-06/R8 (audit): the config report ID 8 must be a 31-byte
-        # FEATURE report (report ID + 31 payload = 32 total, EP0 4x8) —
-        # and the Main item must actually be FEATURE, not a similarly
-        # sized INPUT/OUTPUT. Presence is only enforced when
-        # --require-config is passed (the rk84-dynamic build).
-        cfg_rng = self.find_report(8)
+        # M3-06/R8/N7 (audit): the config report ID 8 must be a 31-byte
+        # FEATURE report inside the 0xFF60 vendor collection (report ID
+        # + 31 payload = 32 total, EP0 4x8). The Main item must be
+        # FEATURE, and ID 8 in ANY OTHER collection does NOT satisfy
+        # --require-config.
+        cfg_rng = self.find_report(8, required_marker=CONFIG_MARKER)
         if self.require_config and cfg_rng is None:
-            self.fail("report ID 8 (SMK84 config) not found (--require-config)")
+            self.fail("report ID 8 not found in vendor usage-page 0xFF60 collection (--require-config)")
         if cfg_rng is not None:
-            main = self.main_item_for(8)
+            main = self.main_item_for(8, required_marker=CONFIG_MARKER)
             if main is None:
-                self.fail("report ID 8 has no Main item")
+                self.fail("report ID 8 has no Main item in the 0xFF60 collection")
             else:
                 main_tag, payload = main
                 if main_tag != HID_RI_FEATURE:
@@ -342,7 +353,7 @@ class DescriptorCheck:
         # EP1 (boot 6KRO) and EP2 (NKRO/System/Consumer) are interrupt
         # endpoints; the Feature report (ID 5) travels via HID control
         # transfers on EP0 (bMaxPacketSize0), NOT EP2.
-        for rng in self.report_ranges:
+        for _marker, rng in self.report_ranges:
             if 6 in self.report_ids(rng) and self.ep_mps.get(2, 64) < 16:
                 self.fail("NKRO (16B) exceeds EP2 MPS")
         # System (ID 1): ID + 1 = 2B on EP2; Consumer (ID 2): ID + 2 = 3B

@@ -120,6 +120,22 @@ typedef struct {
  * a plain __xdata array (SDCC cannot put xdata arrays inside structs). */
 #define CONFIG_STAGE_BUF_SIZE CONFIG_STAGE_MAX
 
+/* ---- EP0 transfer core (N4 audit: shared with usb.c) ----------------- */
+
+typedef enum {
+    EP0_NEXT_STATUS,
+    EP0_NEXT_DATA,
+} ep0_next_state_t;
+
+typedef struct {
+    const uint8_t *src;
+    uint16_t remaining;
+} ep0_xfer_t;
+
+ep0_next_state_t ep0_xfer_next(ep0_xfer_t *xfer,
+                               uint8_t packet[8],
+                               uint8_t *packet_len);
+
 /* ---- HID request validation (R2 audit: factored for testing) --------- */
 
 bool config_set_report_valid(
@@ -170,11 +186,11 @@ const uint8_t *config_tx_get(uint8_t *len);
 /* Process one pending request (main loop; never ISR). */
 void config_protocol_task(void);
 
-/* Cached-response semantics (spec §7.6): the last completed response
- * may be replayed ONLY for an identical full request. */
+/* Cached-response semantics (spec §7.6 + N5): the last completed
+ * response may be replayed ONLY for an identical full request; a
+ * reused transaction ID with different contents is a protocol error
+ * (handled internally in config_protocol_task). */
 void config_cache_set(const uint8_t *resp, uint8_t len,
                       const uint8_t *req_payload, uint8_t req_len);
-bool config_cache_get(const uint8_t *req_payload, uint8_t req_len,
-                      const uint8_t **resp, uint8_t *len);
 
 #endif /* RK84_CONFIG_PROTOCOL_H */

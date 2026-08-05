@@ -142,6 +142,20 @@ static void test_keycode_allowlist(void)
           "QK_MODS combo rejected (audit F3)");
     CHECK(dynamic_keymap_keycode_allowed(0x0201 /* unmapped */) == false,
           "unmapped 0x0201 rejected");
+    /* N1 cross-language vectors: SAFE_RANGE = 0x7E40 (QK_USER), and
+     * only MO(1) = 0x5221 is allowed in the momentary range. */
+    CHECK(dynamic_keymap_keycode_allowed(0x5200 /* TO(0) */) == false,
+          "TO(0) 0x5200 rejected (QK_TO, not SAFE_RANGE)");
+    CHECK(dynamic_keymap_keycode_allowed(0x5220 /* MO(0) */) == false,
+          "MO(0) 0x5220 rejected (only MO(1) allowed)");
+    CHECK(dynamic_keymap_keycode_allowed(0x5221 /* MO(1) */) == true,
+          "MO(1) 0x5221 accepted");
+    CHECK(dynamic_keymap_keycode_allowed(0x5222 /* MO(2) */) == false,
+          "MO(2) 0x5222 rejected");
+    CHECK(dynamic_keymap_keycode_allowed(0x7E40 /* RGB_BRI_UP */) == true,
+          "RGB_BRI_UP 0x7E40 accepted");
+    CHECK(dynamic_keymap_keycode_allowed(0x7E41 /* RGB_BRI_DN */) == true,
+          "RGB_BRI_DN 0x7E41 accepted");
     CHECK(dynamic_keymap_keycode_allowed(RGB_BRI_UP) == true,
           "RGB custom allowed");
     CHECK(dynamic_keymap_keycode_allowed(0x0300u) == false,

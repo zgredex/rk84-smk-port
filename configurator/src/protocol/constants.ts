@@ -113,9 +113,12 @@ export function cmdName(c: Cmd): string {
 }
 
 /**
- * RK84 custom keycodes (mirrors kbdef.h: SAFE_RANGE = 0x5200 + enum).
- * Used by the mock's keymap validation (R1).
+ * RK84 custom keycodes (N1 audit: values from pinned SMK keycodes.h —
+ * SAFE_RANGE = QK_USER = 0x7E40, NOT 0x5200 which is QK_TO).
+ * Used by the mock's keymap validation (R1/N1).
  */
-export const SAFE_RANGE = 0x5200;
+export const SAFE_RANGE = 0x7e40;
 export const RGB_BRI_UP = SAFE_RANGE;
 export const RGB_BRI_DN = SAFE_RANGE + 1;
+/** MO(1) = QK_MOMENTARY | 1 = 0x5220 | 1 (firmware allows ONLY MO(1)). */
+export const MO_1 = 0x5221;

@@ -26,9 +26,10 @@
 #include "config_protocol.c"
 #include "dynamic_keymap.c"
 
-/* ---- EP0 transfer state machine (R2 audit) ---------------------------
- * Stub the EP0 transfer globals + the real step_ep0_in_xfer() logic
- * (copied from usb.c so the packet-count/state decisions are tested). */
+/* ---- EP0 transfer state machine (R2/N4 audit) ------------------------
+ * The packetization logic is the SHARED ep0_xfer_next() from
+ * config_protocol.c (compiled here verbatim) — NOT a copy. The stubs
+ * below provide the EP0 globals the transfer operates on. */
 #define EP0_BUF_SIZE 8u
 uint16_t ep0_xfer_bytes_left;
 uint8_t *ep0_xfer_src;
@@ -49,28 +50,23 @@ static void setup_ep0_in_xfer(uint8_t *src, uint16_t len)
     ep0_xfer_bytes_left = len;
 }
 
-/* Mirror of usb.c's step_ep0_in_xfer. */
+/* Mirrors usb.c's step_ep0_in_xfer: drives the shared ep0_xfer_next()
+ * and maps the result to the harness state values. */
 static void step_ep0_in_xfer(void)
 {
-    if (ep0_xfer_bytes_left == 0) {
-        ep0_state = 2; /* RECV_STATUS */
-        ep0_count = 0;
-    } else if (ep0_xfer_bytes_left > EP0_BUF_SIZE) {
-        ep0_state = 1; /* IN_DATA */
-        set_ep0_in_buffer(ep0_xfer_src, EP0_BUF_SIZE);
-        ep0_xfer_bytes_left -= EP0_BUF_SIZE;
-        ep0_xfer_src += EP0_BUF_SIZE;
-        ep0_count = EP0_BUF_SIZE;
-    } else if (ep0_xfer_bytes_left == EP0_BUF_SIZE) {
-        ep0_state = 1; /* IN_DATA */
-        set_ep0_in_buffer(ep0_xfer_src, EP0_BUF_SIZE);
-        ep0_xfer_bytes_left = 0;
-        ep0_count = EP0_BUF_SIZE;
-    } else {
-        ep0_state = 2; /* RECV_STATUS */
-        set_ep0_in_buffer(ep0_xfer_src, ep0_xfer_bytes_left);
-        ep0_count = (uint8_t)ep0_xfer_bytes_left;
-    }
+    uint8_t packet[EP0_BUF_SIZE];
+    uint8_t len;
+    ep0_xfer_t xfer;
+    xfer.src = ep0_xfer_src;
+    xfer.remaining = ep0_xfer_bytes_left;
+
+    ep0_next_state_t next = ep0_xfer_next(&xfer, packet, &len);
+
+    ep0_xfer_src = (uint8_t *)xfer.src;
+    ep0_xfer_bytes_left = xfer.remaining;
+    set_ep0_in_buffer(packet, len);
+    ep0_count = len;
+    ep0_state = (next == EP0_NEXT_DATA) ? 1u : 2u;
 }
 
 /* Compiled default keymap (stub): needed by the locked-Fn validation
@@ -135,6 +131,8 @@ static int checks = 0;
     } while (0)
 
 /* Build a 32-byte report: [0]=report ID 8, [1..31]=payload. */
+static uint8_t auto_txid = 1;
+
 static void make_request(uint8_t *r, uint8_t cmd, uint8_t txid, uint8_t flags,
                          uint8_t object, uint16_t offset,
                          const uint8_t *payload, uint8_t plen)
@@ -142,7 +140,10 @@ static void make_request(uint8_t *r, uint8_t cmd, uint8_t txid, uint8_t flags,
     memset(r, 0, 32);
     r[0] = REPORT_ID_SMK84_CONFIG;
     r[1] = cmd;
-    r[2] = txid;
+    /* N5 (audit): real clients increment the txid per command; the
+     * harness auto-assigns a fresh txid when the caller passes 0, so
+     * multi-step staged sequences don't trip the txid-collision rule. */
+    r[2] = txid ? txid : auto_txid++;
     r[3] = flags;
     r[4] = object;
     r[5] = (uint8_t)offset;
@@ -233,19 +234,19 @@ static void test_write_chunk(void)
     uint8_t payload[4] = { 0x04, 0x00, 0x05, 0x00 }; /* KC_A, KC_B */
 
     /* staging: BEGIN -> WRITE -> VALIDATE -> APPLY */
-    make_request(r, CFG_CMD_BEGIN_STAGE, 7, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    make_request(r, CFG_CMD_BEGIN_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     uint8_t *resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "begin stage OK");
 
-    make_request(r, CFG_CMD_WRITE_CHUNK, 7, 0, CFG_OBJECT_KEYMAP, 0, payload, 4);
+    make_request(r, CFG_CMD_WRITE_CHUNK, 0, 0, CFG_OBJECT_KEYMAP, 0, payload, 4);
     resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "write chunk OK");
 
-    make_request(r, CFG_CMD_VALIDATE_STAGE, 7, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    make_request(r, CFG_CMD_VALIDATE_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "validate stage OK");
 
-    make_request(r, CFG_CMD_APPLY_STAGE, 7, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    make_request(r, CFG_CMD_APPLY_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "apply stage OK");
 
@@ -272,13 +273,13 @@ static void test_write_locked_fn_rejected(void)
     /* Fn at (5,9): index = 5*16*2 + 9*2 = 178. R4: WRITE is byte-copy
      * (OK); VALIDATE rejects the changed Fn value. */
     uint8_t payload[2] = { 0x04, 0x00 }; /* KC_A — wrong value for Fn */
-    make_request(r, CFG_CMD_BEGIN_STAGE, 10, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    make_request(r, CFG_CMD_BEGIN_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     run_request(r);
-    make_request(r, CFG_CMD_WRITE_CHUNK, 10, 0, CFG_OBJECT_KEYMAP, 178, payload, 2);
+    make_request(r, CFG_CMD_WRITE_CHUNK, 0, 0, CFG_OBJECT_KEYMAP, 178, payload, 2);
     uint8_t *resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK,
           "write changed Fn bytes accepted (byte-copy)");
-    make_request(r, CFG_CMD_VALIDATE_STAGE, 10, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    make_request(r, CFG_CMD_VALIDATE_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_BAD_KEYCODE,
           "validate rejects changed value to locked Fn");
@@ -289,9 +290,9 @@ static void test_write_locked_fn_idempotent(void)
     uint8_t r[32];
     /* Fn at (5,9) = 178; base layer value is MO(1) = 0x5221 */
     uint8_t payload[2] = { 0x21, 0x52 }; /* MO(1) LE — the required value */
-    make_request(r, CFG_CMD_BEGIN_STAGE, 11, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    make_request(r, CFG_CMD_BEGIN_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     run_request(r);
-    make_request(r, CFG_CMD_WRITE_CHUNK, 11, 0, CFG_OBJECT_KEYMAP, 178, payload, 2);
+    make_request(r, CFG_CMD_WRITE_CHUNK, 0, 0, CFG_OBJECT_KEYMAP, 178, payload, 2);
     uint8_t *resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK,
           "write unchanged value to locked Fn OK (idempotent)");
@@ -302,13 +303,13 @@ static void test_write_bad_keycode_rejected(void)
     uint8_t r[32];
     /* R4: WRITE accepts 0xFFFF bytes; VALIDATE rejects them. */
     uint8_t payload[2] = { 0xFF, 0xFF }; /* 0xFFFF not allowed */
-    make_request(r, CFG_CMD_BEGIN_STAGE, 12, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    make_request(r, CFG_CMD_BEGIN_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     run_request(r);
-    make_request(r, CFG_CMD_WRITE_CHUNK, 12, 0, CFG_OBJECT_KEYMAP, 0, payload, 2);
+    make_request(r, CFG_CMD_WRITE_CHUNK, 0, 0, CFG_OBJECT_KEYMAP, 0, payload, 2);
     uint8_t *resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK,
           "write invalid keycode bytes accepted (byte-copy)");
-    make_request(r, CFG_CMD_VALIDATE_STAGE, 12, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    make_request(r, CFG_CMD_VALIDATE_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_BAD_KEYCODE,
           "validate rejects invalid keycode");
@@ -318,9 +319,9 @@ static void test_write_out_of_bounds(void)
 {
     uint8_t r[32];
     uint8_t payload[4] = { 0, 0, 0, 0 };
-    make_request(r, CFG_CMD_BEGIN_STAGE, 13, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    make_request(r, CFG_CMD_BEGIN_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     run_request(r);
-    make_request(r, CFG_CMD_WRITE_CHUNK, 13, 0, CFG_OBJECT_KEYMAP, 382, payload, 4);
+    make_request(r, CFG_CMD_WRITE_CHUNK, 0, 0, CFG_OBJECT_KEYMAP, 382, payload, 4);
     uint8_t *resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_BAD_OFFSET,
           "write beyond object -> BAD_OFFSET");
@@ -333,12 +334,12 @@ static void test_abort_stage(void)
      * abort. The live map must still hold the DEFAULT (KC_A). The old
      * test wrote KC_A over KC_A and could not detect a live write. */
     uint8_t payload[4] = { 0x06, 0x00, 0x07, 0x00 }; /* KC_C, KC_D */
-    make_request(r, CFG_CMD_BEGIN_STAGE, 14, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    make_request(r, CFG_CMD_BEGIN_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     run_request(r);
-    make_request(r, CFG_CMD_WRITE_CHUNK, 14, 0, CFG_OBJECT_KEYMAP, 0, payload, 4);
+    make_request(r, CFG_CMD_WRITE_CHUNK, 0, 0, CFG_OBJECT_KEYMAP, 0, payload, 4);
     run_request(r);
     /* abort discards the stage; the live map is untouched */
-    make_request(r, CFG_CMD_ABORT_STAGE, 14, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    make_request(r, CFG_CMD_ABORT_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     uint8_t *resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "abort stage OK");
 
@@ -356,14 +357,14 @@ static void test_valid_then_invalid_cell_nothing_live(void)
     /* R4 (audit): WRITE accepts valid+invalid bytes (byte-copy only);
      * VALIDATE rejects the invalid cell; the live map stays default. */
     uint8_t payload[4] = { 0x06, 0x00, 0xFF, 0xFF };
-    make_request(r, CFG_CMD_BEGIN_STAGE, 21, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    make_request(r, CFG_CMD_BEGIN_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     run_request(r);
-    make_request(r, CFG_CMD_WRITE_CHUNK, 21, 0, CFG_OBJECT_KEYMAP, 0, payload, 4);
+    make_request(r, CFG_CMD_WRITE_CHUNK, 0, 0, CFG_OBJECT_KEYMAP, 0, payload, 4);
     uint8_t *resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK,
           "write with invalid cell bytes accepted (byte-copy only)");
 
-    make_request(r, CFG_CMD_VALIDATE_STAGE, 21, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    make_request(r, CFG_CMD_VALIDATE_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_BAD_KEYCODE,
           "validate rejects the invalid cell");
@@ -385,21 +386,21 @@ static void test_split_keycode_high_first(void)
     uint8_t hi[1] = { 0x52 };
     uint8_t lo[1] = { 0x21 };
     uint16_t idx = 32; /* (1,0,0): layer 1, row 0, col 0 */
-    make_request(r, CFG_CMD_BEGIN_STAGE, 23, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    make_request(r, CFG_CMD_BEGIN_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     run_request(r);
-    make_request(r, CFG_CMD_WRITE_CHUNK, 23, 0, CFG_OBJECT_KEYMAP, idx + 1, hi, 1);
+    make_request(r, CFG_CMD_WRITE_CHUNK, 0, 0, CFG_OBJECT_KEYMAP, idx + 1, hi, 1);
     uint8_t *resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK,
           "high byte first accepted (no premature validation)");
-    make_request(r, CFG_CMD_WRITE_CHUNK, 23, 0, CFG_OBJECT_KEYMAP, idx, lo, 1);
+    make_request(r, CFG_CMD_WRITE_CHUNK, 0, 0, CFG_OBJECT_KEYMAP, idx, lo, 1);
     resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "low byte accepted");
 
     /* validate + apply, then read back the full keycode */
-    make_request(r, CFG_CMD_VALIDATE_STAGE, 23, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    make_request(r, CFG_CMD_VALIDATE_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "validate split keycode OK");
-    make_request(r, CFG_CMD_APPLY_STAGE, 23, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    make_request(r, CFG_CMD_APPLY_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
     resp = run_request(r);
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK, "apply split keycode OK");
 
@@ -455,13 +456,13 @@ static void test_exact_request_cache(void)
     CHECK(resp != NULL && resp[3] == CFG_STATUS_OK,
           "identical retry served from cache");
 
-    /* same txid, DIFFERENT command -> must be processed fresh, not a
-     * stale cache replay (audit F6) */
+    /* same txid, DIFFERENT command -> N5 (audit, spec §7.6): a new
+     * command with an old transaction ID is an ERROR (BAD_COMMAND),
+     * not a fresh processing and not a stale replay. */
     make_request(r, CFG_CMD_GET_CAPABILITIES, 20, 0, 0, 0, NULL, 0);
     resp = run_request(r);
-    CHECK(resp != NULL && resp[3] == CFG_STATUS_OK &&
-          resp[1] == (CFG_CMD_GET_CAPABILITIES | CFG_CMD_RESPONSE_BIT),
-          "same txid + different command -> fresh response, not stale");
+    CHECK(resp != NULL && resp[3] == CFG_STATUS_BAD_COMMAND,
+          "same txid + different command -> BAD_COMMAND (N5)");
 }
 
 /* ---- M3-05/M3-06: EP0 transfer state machine (mailbox level) ---- */
@@ -615,6 +616,28 @@ static void test_get_report_exact_packet_sequence(void)
     CHECK(ok == 1, "four 8-byte packets reconstruct the report exactly");
 }
 
+static void test_wrong_object_validate_apply(void)
+{
+    uint8_t r[32];
+    /* N3 (audit): VALIDATE/APPLY with a DIFFERENT object than the
+     * staged one must be BAD_OBJECT. */
+    make_request(r, CFG_CMD_BEGIN_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    run_request(r);
+    make_request(r, CFG_CMD_VALIDATE_STAGE, 0, 0, CFG_OBJECT_RGB_STATIC, 0, NULL, 0);
+    uint8_t *resp = run_request(r);
+    CHECK(resp != NULL && resp[3] == CFG_STATUS_BAD_OBJECT,
+          "validate with wrong object -> BAD_OBJECT (N3)");
+    make_request(r, CFG_CMD_APPLY_STAGE, 0, 0, CFG_OBJECT_RGB_STATIC, 0, NULL, 0);
+    resp = run_request(r);
+    CHECK(resp != NULL && resp[3] == CFG_STATUS_BAD_OBJECT,
+          "apply with wrong object -> BAD_OBJECT (N3)");
+    /* the KEYMAP stage is still intact: validate+apply it works */
+    make_request(r, CFG_CMD_VALIDATE_STAGE, 0, 0, CFG_OBJECT_KEYMAP, 0, NULL, 0);
+    resp = run_request(r);
+    CHECK(resp != NULL && resp[3] == CFG_STATUS_OK,
+          "stage intact after wrong-object attempts (N3)");
+}
+
 int main(void)
 {
     printf("RK84 config protocol host harness\n");
@@ -646,6 +669,7 @@ int main(void)
     test_get_report_32_bytes();
     test_get_report_short_read();
     test_get_report_exact_packet_sequence();
+    test_wrong_object_validate_apply();
     printf("---------------------------------\n");
     printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

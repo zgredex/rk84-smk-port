@@ -180,8 +180,9 @@ test("write chunk respects 24-byte limit across object boundary (staged)", async
   assert.equal(obj[300], 0);
 });
 
-test("commit with keys held -> KEYS_HELD", async () => {
+test("commit with keys held -> KEYS_HELD (future-storage mode)", async () => {
   const { t, c } = fresh();
+  t.mode = "future-storage";
   await c.connect();
   t.simulateKeysHeld = true;
   await assert.rejects(() => c.commitStage(), (e: unknown) => {
@@ -191,8 +192,19 @@ test("commit with keys held -> KEYS_HELD", async () => {
   });
 });
 
-test("commit with flash verify fault -> FLASH_VERIFY_FAILED", async () => {
+test("commit in strict M3 mode -> NOT_SUPPORTED (N2)", async () => {
+  const { c } = fresh();
+  await c.connect();
+  await assert.rejects(() => c.commitStage(), (e: unknown) => {
+    assert.ok(e instanceof ConfiguratorError);
+    assert.equal((e as ConfiguratorError).status, Status.NOT_SUPPORTED);
+    return true;
+  });
+});
+
+test("commit with flash verify fault -> FLASH_VERIFY_FAILED (future-storage)", async () => {
   const { t, c } = fresh();
+  t.mode = "future-storage";
   await c.connect();
   t.fault = "flash-verify-fail";
   await assert.rejects(() => c.commitStage(), (e: unknown) => {

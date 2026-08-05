@@ -65,16 +65,17 @@ export class ConfiguratorClient {
   }
 
   /** Run a request/response transaction against the device.
-   * M3-03 (audit): validates EVERY reply against the request before
+   * M3-03/N6 (audit): validates EVERY reply against the request before
    * accepting status/payload — echoed command + response bit, txid,
-   * object, offset, and payload length. A stale or mis-correlated
-   * response is a protocol error, never silently accepted. */
+   * object, offset, payload length (exact when expectedResponseLength
+   * is given), and the 24-byte wire cap. */
   private async transact(
     command: Cmd,
     objectId = 0,
     offset = 0,
     payload: Uint8Array = new Uint8Array(0),
     flags = Flags.NONE,
+    expectedResponseLength?: number,
   ): Promise<Uint8Array> {
     const txid = this.txCounter++ & 0xff;
     const req: RequestPacket = {
@@ -117,7 +118,21 @@ export class ConfiguratorClient {
       );
     }
     if (resp.payload.length > 24) {
-      throw new ConfiguratorError(resp.status, "response payload exceeds 24 bytes");
+      throw new ConfiguratorError(
+        Status.BAD_LENGTH,
+        `response payload ${resp.payload.length} bytes exceeds wire cap 24`,
+      );
+    }
+    // N6 (audit): exact response payload length when the command has a
+    // fixed-size reply — a truncated payload must never be accepted
+    // (e.g. GET_PROTOCOL_INFO silently becoming version 0.0).
+    if (expectedResponseLength !== undefined &&
+        resp.payload.length !== expectedResponseLength) {
+      throw new ConfiguratorError(
+        Status.BAD_LENGTH,
+        `response payload ${resp.payload.length} bytes; ` +
+        `expected ${expectedResponseLength}`,
+      );
     }
     if (resp.status !== Status.OK) {
       throw new ConfiguratorError(resp.status, `cmd 0x${command.toString(16)} failed`);
@@ -126,12 +141,12 @@ export class ConfiguratorClient {
   }
 
   async getProtocolInfo(): Promise<{ major: number; minor: number }> {
-    const p = await this.transact(Cmd.GET_PROTOCOL_INFO);
+    const p = await this.transact(Cmd.GET_PROTOCOL_INFO, 0, 0, new Uint8Array(), Flags.NONE, 2);
     return { major: p[0] ?? 0, minor: p[1] ?? 0 };
   }
 
   async getDeviceInfo(): Promise<DeviceInfo> {
-    const d = await this.transact(Cmd.GET_DEVICE_INFO);
+    const d = await this.transact(Cmd.GET_DEVICE_INFO, 0, 0, new Uint8Array(), Flags.NONE, 24);
     const nameBytes = d.slice(0, 12);
     let end = nameBytes.indexOf(0);
     if (end === -1) end = 12;
@@ -157,10 +172,12 @@ export class ConfiguratorClient {
     let pos = 0;
     while (pos < length) {
       const n = Math.min(24, length - pos);
-      const chunk = await this.transact(Cmd.READ_OBJECT, objectId, offset + pos, new Uint8Array(n));
+      const chunk = await this.transact(
+        Cmd.READ_OBJECT, objectId, offset + pos, new Uint8Array(n),
+        Flags.NONE, n,
+      );
       out.set(chunk, pos);
-      pos += chunk.length;
-      if (chunk.length === 0) break;
+      pos += n; // exact length is enforced (N6)
     }
     return out;
   }
@@ -168,7 +185,7 @@ export class ConfiguratorClient {
   /** Begin staging an object: snapshots the live object into the
    * firmware stage buffer. M3-03: REQUIRED before writeChunk. */
   async beginStage(objectId: ObjectId): Promise<void> {
-    await this.transact(Cmd.BEGIN_STAGE, objectId);
+    await this.transact(Cmd.BEGIN_STAGE, objectId, 0, new Uint8Array(), Flags.NONE, 0);
   }
 
   /** Write an object chunk (stage buffer only; never live). */
@@ -183,12 +200,12 @@ export class ConfiguratorClient {
 
   /** Validate the staged object (allowlist + locked cells). */
   async validateStage(objectId: ObjectId): Promise<void> {
-    await this.transact(Cmd.VALIDATE_STAGE, objectId);
+    await this.transact(Cmd.VALIDATE_STAGE, objectId, 0, new Uint8Array(), Flags.NONE, 0);
   }
 
-  /** Apply staged changes to live RAM (no flash). */
+  /** Apply the validated stage to the live map. */
   async applyStage(objectId: ObjectId): Promise<void> {
-    await this.transact(Cmd.APPLY_STAGE, objectId);
+    await this.transact(Cmd.APPLY_STAGE, objectId, 0, new Uint8Array(), Flags.NONE, 0);
   }
 
   /** Persist the staged profile to flash (A/B atomic). */
@@ -198,7 +215,7 @@ export class ConfiguratorClient {
 
   /** Abort staged changes (live map untouched). */
   async abortStage(objectId: ObjectId): Promise<void> {
-    await this.transact(Cmd.ABORT_STAGE, objectId);
+    await this.transact(Cmd.ABORT_STAGE, objectId, 0, new Uint8Array(), Flags.NONE, 0);
   }
 
   /** Restore compiled defaults (applies live; commit separately). */

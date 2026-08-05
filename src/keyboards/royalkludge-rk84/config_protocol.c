@@ -138,29 +138,38 @@ void config_cache_set(const uint8_t *resp, uint8_t len,
     }
 }
 
-/* Exact-request cache hit (audit): returns true ONLY when the full
- * 31-byte request (command, txid, flags, object, offset, payload) is
- * identical to the cached one. A reused transaction ID with different
- * contents is NOT a cache hit — the caller treats it as a protocol
- * error. */
-bool config_cache_get(const uint8_t *req_payload, uint8_t req_len,
-                      const uint8_t **resp, uint8_t *len)
+/* Exact-request cache hit (audit F6/M3-04 + N5): returns true ONLY
+ * when the full 31-byte request is identical to the cached one. A
+ * reused transaction ID with DIFFERENT contents is a COLLISION — the
+ * caller must reject it (spec §7.6: "a new command with an old
+ * transaction ID is an error"), not process it fresh. */
+typedef enum {
+    CFG_CACHE_MISS,          /* no cache / different txid / bad len */
+    CFG_CACHE_HIT,           /* identical full request -> replay */
+    CFG_CACHE_TXID_COLLISION /* same txid, different request -> error */
+} config_cache_result_t;
+
+static config_cache_result_t config_cache_lookup(
+    const uint8_t *req_payload, uint8_t req_len,
+    const uint8_t **resp, uint8_t *len)
 {
-    if (config_cache_len == 0) {
-        return false;
+    if (config_cache_len == 0 || req_len != CONFIG_REPORT_DATA_SIZE) {
+        return CFG_CACHE_MISS;
     }
-    if (req_len != CONFIG_REPORT_DATA_SIZE) {
-        return false;
+    /* Request payload byte 1 is the transaction ID (after the
+     * report-ID byte, the payload starts with command at [0]). */
+    if (req_payload[1] != config_cache_txid) {
+        return CFG_CACHE_MISS;
     }
     for (uint8_t i = 0; i < CONFIG_REPORT_DATA_SIZE; i++) {
         if (config_cache_req[i] != req_payload[i]) {
-            return false; /* different request, same ID -> not a retry */
+            return CFG_CACHE_TXID_COLLISION;
         }
     }
     *resp = config_cache;
     *len = config_cache_len;
     diag_retry++;
-    return true;
+    return CFG_CACHE_HIT;
 }
 
 /* ---- packet helpers ------------------------------------------------- */
@@ -205,6 +214,43 @@ static void build_response(uint8_t command, uint8_t txid, uint8_t status,
     }
     config_tx.length = CONFIG_REPORT_TOTAL_SIZE;
     config_cache_set(r, config_tx.length, config_last_req, CONFIG_REPORT_DATA_SIZE);
+}
+
+/* ---- EP0 transfer core (N4 audit: shared, not copied) ----------------
+ * Types + declaration live in config_protocol.h; this is the single
+ * implementation shared by usb.c's step_ep0_in_xfer() and the host
+ * harness. */
+
+/* Packetize the next EP0 IN packet. `packet` gets up to 8 bytes;
+ * `packet_len` gets the count (0 when nothing left). Returns
+ * EP0_NEXT_DATA when more packets follow, EP0_NEXT_STATUS when the
+ * transfer is done (short read or exhausted). Shared by usb.c's
+ * step_ep0_in_xfer() and the host harness — no duplicated state
+ * machine. */
+ep0_next_state_t ep0_xfer_next(ep0_xfer_t *xfer,
+                               uint8_t packet[8],
+                               uint8_t *packet_len)
+{
+    if (xfer->remaining == 0) {
+        *packet_len = 0;
+        return EP0_NEXT_STATUS;
+    }
+    if (xfer->remaining >= 8) {
+        for (uint8_t i = 0; i < 8; i++) {
+            packet[i] = xfer->src[i];
+        }
+        xfer->src += 8;
+        xfer->remaining -= 8;
+        *packet_len = 8;
+        return EP0_NEXT_DATA;
+    }
+    /* short read: send remaining bytes, then status */
+    for (uint8_t i = 0; i < (uint8_t)xfer->remaining; i++) {
+        packet[i] = xfer->src[i];
+    }
+    *packet_len = (uint8_t)xfer->remaining;
+    xfer->remaining = 0;
+    return EP0_NEXT_STATUS;
 }
 
 /* ---- capabilities (R7 audit: single source of truth) ---------------- */
@@ -398,12 +444,18 @@ static void handle_request(const uint8_t *req)
         }
 
         case CFG_CMD_VALIDATE_STAGE: {
-            /* Validate all 192 cells: allowlist + locked positions.
-             * Side-effect-free (M3-02): no live map writes. */
+            /* N3 (audit): validate the STAGED object only — a
+             * VALIDATE for a different object is BAD_OBJECT, not OK. */
             if (!config_stage.active) {
                 build_response(command, txid, CFG_STATUS_NOT_STAGED, object, offset, NULL, 0);
                 break;
             }
+            if (object != config_stage.object) {
+                build_response(command, txid, CFG_STATUS_BAD_OBJECT, object, offset, NULL, 0);
+                break;
+            }
+            /* Validate all 192 cells: allowlist + locked positions.
+             * Side-effect-free (M3-02): no live map writes. */
             status = CFG_STATUS_OK;
             for (uint16_t idx = 0; idx < CFG_OBJECT_KEYMAP_SIZE && status == CFG_STATUS_OK; idx += 2) {
                 uint8_t layer = (uint8_t)(idx / (6u * 16u * 2u));
@@ -423,9 +475,14 @@ static void handle_request(const uint8_t *req)
         }
 
         case CFG_CMD_APPLY_STAGE: {
-            /* Copy the validated stage into the live map. */
+            /* Copy the validated stage into the live map. N3: only the
+             * staged object may be applied. */
             if (!config_stage.active) {
                 build_response(command, txid, CFG_STATUS_NOT_STAGED, object, offset, NULL, 0);
+                break;
+            }
+            if (object != config_stage.object) {
+                build_response(command, txid, CFG_STATUS_BAD_OBJECT, object, offset, NULL, 0);
                 break;
             }
             if (!config_stage.validated) {
@@ -449,6 +506,8 @@ static void handle_request(const uint8_t *req)
         }
 
         case CFG_CMD_ABORT_STAGE:
+            /* N3: aborts the globally active stage (documented — no
+             * object identity required; discarding is object-agnostic). */
             config_stage.active = 0;
             config_stage.validated = 0;
             build_response(command, txid, status, object, offset, NULL, 0);
@@ -502,18 +561,31 @@ void config_protocol_task(void)
         return;
     }
 
-    /* Exact-request cache hit? (audit, spec §7.6) — identical full
-     * request only; a reused txid with different contents is handled
-     * as a fresh request below. */
+    /* Exact-request cache (audit F6/N5, spec §7.6): an identical full
+     * request replays the cached response; a reused transaction ID
+     * with different contents is a protocol error (BAD_COMMAND). */
     const uint8_t *cached;
     uint8_t cached_len;
-    if (config_cache_get(req + 1, CONFIG_REPORT_DATA_SIZE,
-                         &cached, &cached_len)) {
+    config_cache_result_t cache =
+        config_cache_lookup(req + 1, CONFIG_REPORT_DATA_SIZE,
+                            &cached, &cached_len);
+    if (cache == CFG_CACHE_HIT) {
         /* replay */
         for (uint8_t i = 0; i < cached_len; i++) {
             config_tx.data[i] = cached[i];
         }
         config_tx.length = cached_len;
+        config_rx_release();
+        return;
+    }
+    if (cache == CFG_CACHE_TXID_COLLISION) {
+        /* spec §7.6: a new command with an old transaction ID is an
+         * error. Respond BAD_COMMAND and do not process the request. */
+        for (uint8_t i = 0; i < CONFIG_REPORT_DATA_SIZE; i++) {
+            config_last_req[i] = req[i + 1];
+        }
+        build_response(req[1], req[2], CFG_STATUS_BAD_COMMAND,
+                       req[4], cfg_read_u16(req + 5), NULL, 0);
         config_rx_release();
         return;
     }

@@ -15,6 +15,7 @@
 import {
   Cmd,
   Flags,
+  MO_1,
   OBJECT_SIZES,
   ObjectId,
   RGB_BRI_DN,
@@ -40,6 +41,10 @@ export type MockFault =
   | "protected-address"
   | "busy";
 
+/** N2 (audit): strict M3 firmware behavior by default; persistence
+ * simulation only behind the explicit "future-storage" mode. */
+export type MockMode = "m3" | "future-storage";
+
 export class MockTransport implements DeviceTransport {
   /** Object store: objectId -> Uint8Array (size from OBJECT_SIZES). */
   private store = new Map<number, Uint8Array>();
@@ -60,12 +65,20 @@ export class MockTransport implements DeviceTransport {
   /** Programmable fault for commit/apply testing. */
   fault: MockFault = "none";
 
+  /** N2: strict M3 behavior (COMMIT -> NOT_SUPPORTED, keymap-only
+   * objects) unless explicitly set to the future-storage mode.
+   * Public so tests can toggle it. */
+  mode: MockMode = "m3";
+  /** Compiled keymap defaults (N2): the immutable baseline that
+   * RESET_DEFAULTS restores and locked-Fn validation compares against. */
+  private readonly compiledDefaults: Uint8Array;
+
   /** Simulation controls. */
   simulateKeysHeld = false;
   /** If set, BEGIN_STAGE/WRITE_CHUNK reject with BAD_OBJECT. */
   rejectUnknownObjects = true;
 
-  constructor() {
+  constructor(compiledDefaults?: Uint8Array) {
     for (const [id, size] of Object.entries(OBJECT_SIZES)) {
       this.store.set(Number(id), new Uint8Array(size));
     }
@@ -74,14 +87,15 @@ export class MockTransport implements DeviceTransport {
     this.store.set(0x81, new Uint8Array(126)); // led map placeholder
     this.store.set(0x82, new Uint8Array(64)); // diagnostics
     // Firmware-accurate keymap defaults: the locked Fn cell (5,9) is
-    // MO(1) = 0x5221 on the base layer (R1 — validation compares
-    // against this). Other cells stay KC_NO (valid).
-    const km = this.store.get(ObjectId.KEYMAP);
-    if (km) {
-      const fnIdx = (5 * 16 + 9) * 2; // base layer, (row5, col9)
-      km[fnIdx] = 0x21;
-      km[fnIdx + 1] = 0x52;
-    }
+    // MO(1) = 0x5221 on the base layer (N1/R1 — validation compares
+    // against the immutable compiled defaults, not the mutable store).
+    // Other cells stay KC_NO (valid).
+    const km = new Uint8Array(OBJECT_SIZES[ObjectId.KEYMAP] ?? 384);
+    const fnIdx = (5 * 16 + 9) * 2; // base layer, (row5, col9)
+    km[fnIdx] = 0x21;
+    km[fnIdx + 1] = 0x52;
+    this.compiledDefaults = compiledDefaults ?? km;
+    this.store.set(ObjectId.KEYMAP, new Uint8Array(this.compiledDefaults));
   }
 
   async connect(): Promise<void> {
@@ -103,10 +117,10 @@ export class MockTransport implements DeviceTransport {
     return o;
   }
 
-  /** R1 (audit): firmware-equivalent keymap validation — same SMK
-   * predicate ranges the firmware allowlist uses (basic, System,
-   * Consumer, modifier, MO(1), RGB custom) + the locked Fn cell
-   * (5,9) which must keep its default value. */
+  /** R1/N1 (audit): firmware-equivalent keymap validation — same SMK
+   * predicate ranges the firmware allowlist uses. N1: SAFE_RANGE =
+   * QK_USER = 0x7E40 (NOT 0x5200 = QK_TO); only MO(1) = 0x5221 is
+   * allowed, not the whole momentary range. */
   private validateKeymap(raw: Uint8Array): Status {
     const size = 2 * 6 * 16 * 2;
     if (raw.length !== size) return Status.BAD_LENGTH;
@@ -115,12 +129,11 @@ export class MockTransport implements DeviceTransport {
     const isSystem = (c: number) => c >= 0xa5 && c <= 0xa7;
     const isConsumer = (c: number) => c >= 0xa8 && c <= 0xc2;
     const isModifier = (c: number) => c >= 0xe0 && c <= 0xe7;
-    const isMomentary = (c: number) => c >= 0x5220 && c <= 0x523f;
     const allowed = (c: number) =>
       c === 0x00 /* KC_NO */ ||
       c === 0x01 /* KC_TRANSPARENT */ ||
       isBasic(c) || isSystem(c) || isConsumer(c) || isModifier(c) ||
-      isMomentary(c) ||
+      c === MO_1 ||
       c === RGB_BRI_UP || c === RGB_BRI_DN;
 
     for (let cell = 0; cell < size / 2; cell++) {
@@ -252,13 +265,16 @@ export class MockTransport implements DeviceTransport {
         return ok(new Uint8Array([this.fault === "none" ? 0 : 1]));
 
       case Cmd.READ_OBJECT: {
+        // N2: M3 firmware supports ONLY the KEYMAP object.
+        if (req.objectId !== ObjectId.KEYMAP) return fail(Status.BAD_OBJECT);
         const obj = this.store.get(req.objectId);
         if (!obj) return fail(Status.BAD_OBJECT);
-        if (req.offset + req.payload.length > obj.length && req.payload.length > 0) {
+        const length = req.payload.length || 24;
+        if (req.offset + length > obj.length) {
           return fail(Status.BAD_OFFSET);
         }
         const start = req.offset;
-        const end = Math.min(obj.length, start + req.payload.length);
+        const end = Math.min(obj.length, start + length);
         return ok(obj.slice(start, end));
       }
 
@@ -316,6 +332,9 @@ export class MockTransport implements DeviceTransport {
       }
 
       case Cmd.COMMIT_STAGE: {
+        // N2: M3 firmware returns NOT_SUPPORTED; persistence faults
+        // only exist behind the explicit future-storage mode.
+        if (this.mode === "m3") return fail(Status.NOT_SUPPORTED);
         if (this.simulateKeysHeld) return fail(Status.KEYS_HELD);
         switch (this.fault) {
           case "flash-verify-fail":
@@ -335,10 +354,16 @@ export class MockTransport implements DeviceTransport {
         return ok();
 
       case Cmd.RESET_DEFAULTS:
+        // N2: restore the immutable compiled defaults (like firmware
+        // loading keymaps[][]).
+        this.store.set(ObjectId.KEYMAP, new Uint8Array(this.compiledDefaults));
+        this.stageObject = null;
+        this.stagedData = null;
+        this.stageValidated = false;
         return ok();
 
       case Cmd.GET_DIAGNOSTICS:
-        return ok(new Uint8Array(16));
+        return ok(new Uint8Array(8));
 
       case Cmd.ARM_BOOTLOADER:
         return fail(Status.NOT_SUPPORTED);
