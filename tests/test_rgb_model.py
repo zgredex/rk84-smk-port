@@ -14,7 +14,6 @@ from .rgb_model import (
     RGB_COMPONENTS,
     RGB_PHASES,
     RGB_ROWS,
-    PROBE_DUTY,
     SINK_PHASES,
     RGBSchedulerModel,
 )
@@ -93,7 +92,8 @@ class SchedulerTests(unittest.TestCase):
 
     def test_rgb_three_stripe_probe(self):
         """The diagnostic: max brightness, raw plane p at column p on
-        every row; all other cells zero."""
+        every row; all other cells zero (including cross-plane zeros
+        within the stripe columns)."""
         m = RGBSchedulerModel("rgb")
         m.start()
         self.assertEqual(m.brightness, INITIAL_BRIGHTNESS)  # 5
@@ -102,11 +102,19 @@ class SchedulerTests(unittest.TestCase):
             self.assertEqual(m.fb[0][base + 0], INITIAL_SOURCE)
             self.assertEqual(m.fb[1][base + 1], INITIAL_SOURCE)
             self.assertEqual(m.fb[2][base + 2], INITIAL_SOURCE)
+            # Cross-plane: each stripe column is lit ONLY in its own
+            # plane (plane 0 at col 0 has planes 1/2 zero, etc.).
+            self.assertEqual(m.fb[1][base + 0], 0)
+            self.assertEqual(m.fb[2][base + 0], 0)
+            self.assertEqual(m.fb[0][base + 1], 0)
+            self.assertEqual(m.fb[2][base + 1], 0)
+            self.assertEqual(m.fb[0][base + 2], 0)
+            self.assertEqual(m.fb[1][base + 2], 0)
+            # All other columns fully dark in every plane.
             for col in range(RGB_COLS):
                 if col not in (0, 1, 2):
-                    self.assertEqual(m.fb[0][base + col], 0)
-                    self.assertEqual(m.fb[1][base + col], 0)
-                    self.assertEqual(m.fb[2][base + col], 0)
+                    for comp in range(RGB_COMPONENTS):
+                        self.assertEqual(m.fb[comp][base + col], 0)
         for _ in range(RGB_PHASES):
             m.step()
         self.assertEqual(m.max_duty_written, PROBE_DUTY)  # 2550
